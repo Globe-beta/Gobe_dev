@@ -2,6 +2,15 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
+    <!-- Safari iOS met en cache la page HTML elle-même de façon très agressive : sans ça,
+         un appareil peut continuer à exécuter une ancienne version du code pendant des
+         heures après un nouveau déploiement, sans qu'aucun rechargement "normal" ne le
+         détecte (les fichiers JS/CSS ont un nom différent à chaque build, mais si
+         index.html lui-même reste en cache, le navigateur ne sait même pas qu'il existe
+         une nouvelle version à aller chercher). -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

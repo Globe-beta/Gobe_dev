@@ -106,7 +106,13 @@ window.addEventListener('unhandledrejection', (e) => showError('Erreur (promesse
 // sans jamais passer à "Prêt", sans bandeau rouge non plus, ça oriente le diagnostic.
 const statusEl = document.createElement('div');
 statusEl.style.cssText = 'position:fixed;top:56px;left:8px;right:8px;z-index:9998;font:13px monospace;font-weight:700;color:#000;background:#ffe400;padding:6px 10px;border-radius:6px;text-align:center;';
-statusEl.textContent = 'Chargement…';
+// L'identifiant de build est affiché ici (bandeau toujours visible en haut), pas seulement
+// en bas de la légende (invisible sur les captures d'écran reçues jusqu'ici, coupée par le
+// bord de l'écran) : Safari iOS met en cache la page HTML de façon agressive, et sans ce
+// repère bien visible, impossible de savoir si un appareil exécute vraiment le dernier
+// déploiement ou une ancienne version restée en cache.
+const BUILD_ID = typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?';
+statusEl.textContent = `Chargement… (build ${BUILD_ID})`;
 document.body.appendChild(statusEl);
 
 function hasWebGL() {
@@ -381,7 +387,7 @@ function loadGameData(attempt = 1) {
         const topGroup = world.scene().children.find((c) => c.type === 'Group');
         layersOk = topGroup.children.filter((c) => c.children.length > 0).length;
       } catch { /* ignore */ }
-      readyStatusBase = `Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
+      readyStatusBase = `build ${BUILD_ID} · Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
       renderAll();
     }, 1200);
   }).catch((err) => {
