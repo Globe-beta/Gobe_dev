@@ -31,26 +31,6 @@ function markerColorForTerritoire(id) {
   return p === undefined ? MARKER_NEUTRAL : PLAYERS[p].color;
 }
 
-function resourceLabel(r) {
-  if (typeof r === 'string') return r;
-  return `${r.type} niv.${r.niveau}`;
-}
-
-function tooltipHtml(territoireId) {
-  const t = TERRITOIRE_PAR_ID[territoireId];
-  if (!t) return '';
-  const owner = ownership[territoireId];
-  const ressources = t.ressources.length ? t.ressources.map(resourceLabel).join(', ') : '—';
-  return `
-    <div class="tooltip">
-      <b>${t.nom}</b>
-      <span class="dim">${t.region} · ${t.bloc}</span><br/>
-      Ressources : ${ressources}<br/>
-      Enclavement : ${t.enclavement}${t.slotIndustrie ? ' · Slot Industrie' : ''}${t.ville ? ` · Ville : ${t.ville.nom} (${t.ville.slots} slot${t.ville.slots > 1 ? 's' : ''})` : ''}<br/>
-      <span class="dim">${owner === undefined ? 'Non attribué' : PLAYERS[owner].name}</span>
-    </div>`;
-}
-
 function computeScores() {
   const scores = PLAYERS.map(() => ({ territoires: 0, regions: 0, villes: 0 }));
 
@@ -190,7 +170,6 @@ const world = new Globe(globeEl)
   .polygonCapColor((f) => colorForTerritoire(f.properties.territoireId))
   .polygonSideColor((f) => (ownership[f.properties.territoireId] === undefined ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.35)'))
   .polygonStrokeColor(() => 'rgba(255,255,255,0.55)')
-  .polygonLabel((f) => tooltipHtml(f.properties.territoireId))
   .onPolygonClick((f) => assignTerritoire(f.properties.territoireId))
   .htmlLat((d) => d.lat)
   .htmlLng((d) => d.lon)
@@ -216,7 +195,16 @@ function buildMarkerElement(d) {
   return el;
 }
 
+// Sur écran tactile, un tapotement peut déclencher plusieurs "clics" d'affilée si le
+// doigt bouge légèrement (le geste est alors aussi interprété comme une rotation du
+// globe). Sans ça, un seul tapotement pouvait attribuer plusieurs territoires voisins
+// à la suite. On ignore toute nouvelle attribution moins de 400 ms après la précédente.
+let lastAssignAt = 0;
 function assignTerritoire(id) {
+  const now = Date.now();
+  if (now - lastAssignAt < 400) return;
+  lastAssignAt = now;
+
   const region = TERRITOIRE_PAR_ID[id]?.region;
   ownership[id] = activePlayer;
   renderAll();
