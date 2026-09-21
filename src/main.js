@@ -76,6 +76,29 @@ const globeEl = document.createElement('div');
 globeEl.id = 'globeViz';
 app.appendChild(globeEl);
 
+// Bandeau d'erreur visible à l'écran : sans ça, un souci (WebGL, chargement des
+// données...) se traduit juste par un écran noir sans aucune indication.
+const errorBanner = document.createElement('div');
+errorBanner.style.cssText = 'position:absolute;inset:0;z-index:9999;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;background:#1a0505;color:#ffb4b4;font:15px/1.5 system-ui,sans-serif;';
+app.appendChild(errorBanner);
+function showError(title, detail) {
+  errorBanner.style.display = 'flex';
+  errorBanner.innerHTML = `<div style="font-size:20px;font-weight:700">⚠️ ${title}</div><div style="max-width:480px;opacity:0.85;font-family:ui-monospace,monospace;font-size:13px;white-space:pre-wrap">${detail}</div>`;
+}
+window.addEventListener('error', (e) => { if (e.message !== 'WEBGL_UNAVAILABLE') showError('Erreur JavaScript', e.message); });
+window.addEventListener('unhandledrejection', (e) => showError('Erreur (promesse)', String(e.reason)));
+
+function hasWebGL() {
+  try {
+    const c = document.createElement('canvas');
+    return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')));
+  } catch { return false; }
+}
+if (!hasWebGL()) {
+  showError('WebGL indisponible sur cet appareil/navigateur', "Le globe 3D a besoin de WebGL. Essaie de recharger la page, ou dans un autre navigateur.");
+  throw new Error('WEBGL_UNAVAILABLE');
+}
+
 const topbar = document.createElement('div');
 topbar.className = 'topbar';
 app.appendChild(topbar);
@@ -213,6 +236,8 @@ Promise.all([
   }
   world.htmlElementsData(markersData);
   renderAll();
+}).catch((err) => {
+  showError('Impossible de charger les données géographiques', String(err));
 });
 
 window.addEventListener('resize', () => {
