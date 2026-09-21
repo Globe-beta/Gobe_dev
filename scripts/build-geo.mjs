@@ -24,6 +24,7 @@ import simplify from '@turf/simplify';
 import kinks from '@turf/kinks';
 import truncate from '@turf/truncate';
 import buffer from '@turf/buffer';
+import area from '@turf/area';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -346,7 +347,24 @@ function countKinksOfPolygon(polygonCoords) {
   catch { return 1; }
 }
 
+// Certains morceaux fusionnés (ex. littoral brésilien) contiennent des dizaines de
+// minuscules trous internes (< 50 km²), artefacts de la fusion plutôt que de vraies
+// enclaves. Ces trous bloquent ensuite la simplification (Douglas-Peucker en crée des
+// auto-intersections) sans être visibles à l'échelle du plateau : on les retire.
+const HOLE_AREA_MIN_M2 = 50_000_000; // 50 km²
+function ringAreaM2(ring) {
+  try { return area({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } }); }
+  catch { return 0; }
+}
+function stripTinyHoles(polygonCoords) {
+  if (polygonCoords.length <= 1) return polygonCoords;
+  const [exterior, ...holes] = polygonCoords;
+  const keptHoles = holes.filter((h) => ringAreaM2(h) >= HOLE_AREA_MIN_M2);
+  return [exterior, ...keptHoles];
+}
+
 function cleanPiece(polygonCoords) {
+  polygonCoords = stripTinyHoles(polygonCoords);
   if (countKinksOfPolygon(polygonCoords) === 0) return polygonCoords;
   const asFeature = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: polygonCoords } };
   for (const dist of [0.0002, 0.001, 0.005, 0.02]) {
@@ -363,16 +381,40 @@ function cleanPiece(polygonCoords) {
 }
 
 function simplifyPieceIfValid(polygonCoords) {
-  for (const tolerance of [0.03, 0.015, 0.008, 0.003]) {
+  for (const tolerance of [0.05, 0.03, 0.015, 0.008, 0.003]) {
     const simplified = simplify({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: polygonCoords } }, { tolerance, highQuality: true, mutate: false });
     if (countKinksOfPolygon(simplified.geometry.coordinates) === 0) return simplified.geometry.coordinates;
   }
   return polygonCoords;
 }
 
+// Un territoire fusionné peut compter jusqu'à plusieurs centaines de morceaux séparés
+// (îlots minuscules, langues de terre isolées). À l'échelle de ce plateau (47 territoires
+// pour toute la planète), un confetti de quelques km² n'a aucune importance de jeu et ne
+// fait que coûter une triangulation et une zone cliquable au rendu — ce qui a fini par
+// ralentir sérieusement l'appareil de test. Plutôt qu'un calcul savant (couverture d'aire
+// cumulée, plafond de nombre...), on tranche simplement : sous ce seuil de surface, un
+// morceau est ignoré, un point c'est tout — pas de tracé de frontière pour de simples îlots.
+const MIN_PIECE_AREA_M2 = 3_000 * 1e6; // 3000 km² (~taille de la Corse)
+function pieceAreaM2(coords) {
+  try { return area({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: coords } }); }
+  catch { return 0; }
+}
+function keepSignificantPieces(pieces) {
+  if (pieces.length <= 1) return pieces;
+  const withArea = pieces.map((coords) => ({ coords, area: pieceAreaM2(coords) }));
+  const significant = withArea.filter((p) => p.area >= MIN_PIECE_AREA_M2).map((p) => p.coords);
+  if (significant.length > 0) return significant;
+  // Cas rare : le territoire n'est fait que de petites îles (aucune ne dépasse le seuil).
+  // On garde quand même la plus grande pour ne jamais laisser un territoire sans forme.
+  withArea.sort((a, b) => b.area - a.area);
+  return [withArea[0].coords];
+}
+
 const abandonedPieces = [];
 for (const feature of merged) {
-  const pieces = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+  const rawPieces = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+  const pieces = keepSignificantPieces(rawPieces);
   const cleaned = [];
   for (const piece of pieces) {
     const fixed = cleanPiece(piece);

@@ -8,10 +8,12 @@ const PLAYERS = [
   { name: 'Joueur 3', color: '#2a9d8f' },
   { name: 'Joueur 4', color: '#f4a261' },
 ];
-// Couleurs pleines (opaques) uniquement : la transparence force un rendu par
-// tri/mélange alpha bien plus coûteux, ce qui a fait ramer l'appareil de test
-// (dizaines de parois de territoires superposées en transparence).
-const NEUTRAL = '#3a3f4d';
+// Territoires non attribués : semi-transparents pour laisser voir la texture terrestre
+// en dessous ("esthétique Google Earth"). Le vrai coût de la transparence n'était pas
+// elle-même mais le nombre de morceaux de géométrie superposés (2750 îlots à l'origine,
+// réduits à ~106 en gardant l'essentiel de la surface réelle) : avec si peu de parois à
+// trier/mélanger, la transparence redevient largement abordable.
+const NEUTRAL = 'rgba(58,63,77,0.42)';
 const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien visible (carré blanc)
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
@@ -159,6 +161,31 @@ function showToast(msg) {
   toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
 }
 
+// ---------- Détection tapotement propre vs glissement (rotation du globe) ----------
+// three-globe déclenche onPolygonClick sur l'événement 'click' du canvas ; sur iPad, un
+// tapotement qui glisse légèrement pendant une rotation du globe pouvait quand même
+// produire un ou plusieurs clics sur des territoires traversés au passage ("ça défile
+// plusieurs territoires à la suite comme si ça cherchait"). On mesure nous-mêmes la
+// distance et la durée entre l'appui et le relâchement, et on n'autorise l'attribution
+// que si ça ressemble vraiment à un tapotement immobile.
+let pointerDownX = 0;
+let pointerDownY = 0;
+let pointerDownAt = 0;
+let lastPointerWasClean = true;
+document.addEventListener('pointerdown', (e) => {
+  pointerDownX = e.clientX;
+  pointerDownY = e.clientY;
+  pointerDownAt = Date.now();
+}, true);
+document.addEventListener('pointerup', (e) => {
+  const dist = Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY);
+  const duration = Date.now() - pointerDownAt;
+  lastPointerWasClean = dist < 8 && duration < 600;
+}, true);
+function wasCleanTap() {
+  return lastPointerWasClean;
+}
+
 // ---------- Globe ----------
 const world = new Globe(globeEl)
   .onGlobeReady(() => { window.__globeReady = true; })
@@ -167,12 +194,10 @@ const world = new Globe(globeEl)
   .showAtmosphere(true)
   .atmosphereColor('#6fb1ff')
   .polygonAltitude(0.006)
-  // Couleurs pleines partout (pas de transparence) : la transparence force un rendu
-  // par tri alpha bien plus coûteux et a fait ramer l'appareil de test.
   .polygonCapColor((f) => colorForTerritoire(f.properties.territoireId))
   .polygonSideColor(() => 'rgba(0,0,0,0.3)')
   .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
-  .onPolygonClick((f) => assignTerritoire(f.properties.territoireId))
+  .onPolygonClick((f) => { if (!wasCleanTap()) return; assignTerritoire(f.properties.territoireId); })
   .htmlLat((d) => d.lat)
   .htmlLng((d) => d.lon)
   .htmlAltitude(0.012)
@@ -189,7 +214,7 @@ function buildMarkerElement(d) {
     el.className = `city-marker slots-${Math.min(d.slots, 3)}`;
     el.style.background = markerColorForTerritoire(d.territoireId);
     el.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
-    el.onclick = (ev) => { ev.stopPropagation(); assignTerritoire(d.territoireId); };
+    el.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; assignTerritoire(d.territoireId); };
   } else {
     el.className = 'factory-marker';
     el.style.borderColor = markerColorForTerritoire(d.territoireId);
