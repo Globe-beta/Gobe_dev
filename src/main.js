@@ -85,8 +85,21 @@ function showError(title, detail) {
   errorBanner.style.display = 'flex';
   errorBanner.innerHTML = `<div style="font-size:20px;font-weight:700">⚠️ ${title}</div><div style="max-width:480px;opacity:0.85;font-family:ui-monospace,monospace;font-size:13px;white-space:pre-wrap">${detail}</div>`;
 }
-window.addEventListener('error', (e) => { if (e.message !== 'WEBGL_UNAVAILABLE') showError('Erreur JavaScript', e.message); });
+// capture:true est indispensable pour attraper les échecs de chargement de fichiers
+// (script/texture/JSON manquant ou bloqué) : ces erreurs ne remontent pas en bouillonnement.
+window.addEventListener('error', (e) => {
+  if (e.message === 'WEBGL_UNAVAILABLE') return;
+  const cible = e.target && e.target !== window ? ` (${e.target.tagName} : ${e.target.src || e.target.href || '?'})` : '';
+  showError('Erreur de chargement/JavaScript', (e.message || 'échec du chargement d\'une ressource') + cible);
+}, true);
 window.addEventListener('unhandledrejection', (e) => showError('Erreur (promesse)', String(e.reason)));
+
+// Statut visible en permanence en haut à droite : si ça reste bloqué sur "Chargement…"
+// sans jamais passer à "Prêt", sans bandeau rouge non plus, ça oriente le diagnostic.
+const statusEl = document.createElement('div');
+statusEl.style.cssText = 'position:absolute;bottom:6px;right:8px;z-index:9998;font:11px monospace;color:rgba(255,255,255,0.35);pointer-events:none;';
+statusEl.textContent = 'Chargement…';
+app.appendChild(statusEl);
 
 function hasWebGL() {
   try {
@@ -141,6 +154,7 @@ legend.innerHTML = `
   <div class="row"><span class="sq"></span> ville (carré, taille = slots)</div>
   <div class="row"><span class="sq" style="transform:rotate(45deg)"></span> slot Industrie</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
+  <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
 `;
 app.appendChild(legend);
 
@@ -218,10 +232,19 @@ function renderAll() {
 }
 
 // ---------- Chargement des données géographiques ----------
+function fetchJson(url) {
+  return fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`HTTP ${r.status} sur ${url}`);
+    return r.json();
+  });
+}
+
+statusEl.textContent = 'Chargement des données géographiques…';
 Promise.all([
-  fetch('geo/territoires.geo.json').then((r) => r.json()),
-  fetch('geo/centroides.json').then((r) => r.json()),
+  fetchJson('geo/territoires.geo.json'),
+  fetchJson('geo/centroides.json'),
 ]).then(([geo, centroides]) => {
+  statusEl.textContent = `Prêt (${geo.features.length} territoires)`;
   world.polygonsData(geo.features);
 
   markersData = [];
@@ -237,6 +260,7 @@ Promise.all([
   world.htmlElementsData(markersData);
   renderAll();
 }).catch((err) => {
+  statusEl.textContent = 'Échec du chargement';
   showError('Impossible de charger les données géographiques', String(err));
 });
 
