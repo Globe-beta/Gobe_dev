@@ -240,12 +240,22 @@ function fetchJson(url) {
   });
 }
 
+// Cache-busting : geo/*.json ont un nom fixe (pas de hash comme les assets JS/CSS),
+// le CDN/navigateur peut donc en garder une ancienne copie en cache. On force le
+// rechargement en accrochant l'identifiant de build à l'URL.
+const cacheBust = typeof __BUILD_ID__ !== 'undefined' ? `?v=${encodeURIComponent(__BUILD_ID__)}` : `?v=${Date.now()}`;
+
 statusEl.textContent = 'Chargement des données géographiques…';
 Promise.all([
-  fetchJson('geo/territoires.geo.json'),
-  fetchJson('geo/centroides.json'),
+  fetchJson('geo/territoires.geo.json' + cacheBust),
+  fetchJson('geo/centroides.json' + cacheBust),
 ]).then(([geo, centroides]) => {
-  statusEl.textContent = `Prêt (${geo.features.length} territoires)`;
+  function countPoints(geom) {
+    const rings = geom.type === 'Polygon' ? geom.coordinates : geom.coordinates.flat();
+    return rings.reduce((a, r) => a + r.length, 0);
+  }
+  const totalPoints = geo.features.reduce((a, f) => a + countPoints(f.geometry), 0);
+  statusEl.textContent = `Prêt (${geo.features.length} terr., ${totalPoints} pts géo)`;
   world.polygonsData(geo.features);
 
   markersData = [];
@@ -263,9 +273,13 @@ Promise.all([
 
   setTimeout(() => {
     const domMarkers = document.querySelectorAll('.city-marker, .factory-marker').length;
-    const sceneObjs = world.scene ? world.scene().children.length : '?';
-    statusEl.textContent = `Prêt (${geo.features.length} terr.) · scène:${sceneObjs} · marqueurs DOM:${domMarkers}`;
-  }, 800);
+    let layersOk = '?';
+    try {
+      const topGroup = world.scene().children.find((c) => c.type === 'Group');
+      layersOk = topGroup.children.filter((c) => c.children.length > 0).length;
+    } catch { /* ignore */ }
+    statusEl.textContent = `Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
+  }, 1200);
 }).catch((err) => {
   statusEl.textContent = 'Échec du chargement';
   showError('Impossible de charger les données géographiques', String(err));
