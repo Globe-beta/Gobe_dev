@@ -18,14 +18,26 @@ const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien vis
 // attribué (alpha 0) écrit alors quand même dans le tampon de profondeur, ce qui peut
 // perturber le tri des surfaces transparentes voisines (parois, contours). En fournissant
 // nos propres matériaux avec depthWrite:false pour tout ce qui est invisible ou semi-
-// transparent, on élimine ce risque à la source. Un petit nombre d'instances partagées
-// (une par état : non attribué, ou par joueur) plutôt qu'une par territoire : moins de
-// création d'objets, et le rendu peut être basculé instantanément en changeant juste la
-// référence de matériau utilisée.
-const capMaterialUnclaimed = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
-const sideMaterialUnclaimed = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
-const capMaterialsByPlayer = PLAYERS.map((p) => new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide }));
-const sideMaterialsByPlayer = PLAYERS.map(() => new THREE.MeshBasicMaterial({ color: 0x141414, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }));
+// transparent, on élimine ce risque à la source.
+//
+// Une instance de matériau DÉDIÉE par territoire (et par état : non attribué ou par
+// joueur), plutôt que des instances partagées entre territoires : sur l'appareil de test,
+// un territoire attribué à un joueur a fini par visuellement "contaminer" tous les autres
+// territoires non attribués avec la même couleur, symptôme qui n'a pu être reproduit dans
+// aucun test automatisé mais qui disparaît par construction si aucune référence de
+// matériau n'est jamais partagée entre deux territoires différents.
+const capMaterialsById = new Map();
+const sideMaterialsById = new Map();
+for (const t of TERRITOIRES) {
+  capMaterialsById.set(t.id, [
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
+    ...PLAYERS.map((p) => new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide })),
+  ]);
+  sideMaterialsById.set(t.id, [
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
+    ...PLAYERS.map(() => new THREE.MeshBasicMaterial({ color: 0x141414, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide })),
+  ]);
+}
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
@@ -39,12 +51,12 @@ for (const t of TERRITOIRES) {
 
 function capMaterialForTerritoire(id) {
   const p = ownership[id];
-  return p === undefined ? capMaterialUnclaimed : capMaterialsByPlayer[p];
+  return capMaterialsById.get(id)[p === undefined ? 0 : p + 1];
 }
 
 function sideMaterialForTerritoire(id) {
   const p = ownership[id];
-  return p === undefined ? sideMaterialUnclaimed : sideMaterialsByPlayer[p];
+  return sideMaterialsById.get(id)[p === undefined ? 0 : p + 1];
 }
 
 function markerColorForTerritoire(id) {
