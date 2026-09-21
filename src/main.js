@@ -171,6 +171,7 @@ function showToast(msg) {
 
 // ---------- Globe ----------
 const world = new Globe(globeEl)
+  .onGlobeReady(() => { window.__globeReady = true; })
   .globeImageUrl('textures/earth-dark.jpg')
   .backgroundImageUrl('textures/night-sky.png')
   .backgroundColor('#05070d')
@@ -188,6 +189,7 @@ const world = new Globe(globeEl)
   .htmlElement(buildMarkerElement);
 
 world.pointOfView({ lat: 20, lng: 10, altitude: 2.6 }, 0);
+window.__world = world; // debug uniquement
 
 let markersData = [];
 

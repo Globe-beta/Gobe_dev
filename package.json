@@ -13,6 +13,7 @@
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "@turf/area": "^7.4.0",
     "@turf/boolean-valid": "^7.4.0",
     "@turf/buffer": "^7.4.0",
     "@turf/clean-coords": "^7.4.0",
