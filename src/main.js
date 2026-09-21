@@ -94,12 +94,13 @@ window.addEventListener('error', (e) => {
 }, true);
 window.addEventListener('unhandledrejection', (e) => showError('Erreur (promesse)', String(e.reason)));
 
-// Statut visible en permanence en haut à droite : si ça reste bloqué sur "Chargement…"
+// Statut de diagnostic bien visible, collé en haut (jamais coupé par la barre du
+// navigateur, contrairement au bas de l'écran) : si ça reste bloqué sur "Chargement…"
 // sans jamais passer à "Prêt", sans bandeau rouge non plus, ça oriente le diagnostic.
 const statusEl = document.createElement('div');
-statusEl.style.cssText = 'position:absolute;bottom:6px;right:8px;z-index:9998;font:11px monospace;color:rgba(255,255,255,0.35);pointer-events:none;';
+statusEl.style.cssText = 'position:fixed;top:56px;left:8px;right:8px;z-index:9998;font:13px monospace;font-weight:700;color:#000;background:#ffe400;padding:6px 10px;border-radius:6px;text-align:center;';
 statusEl.textContent = 'Chargement…';
-app.appendChild(statusEl);
+document.body.appendChild(statusEl);
 
 function hasWebGL() {
   try {
