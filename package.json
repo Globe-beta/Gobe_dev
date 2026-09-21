@@ -13,8 +13,15 @@
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "@turf/boolean-valid": "^7.4.0",
+    "@turf/buffer": "^7.4.0",
+    "@turf/clean-coords": "^7.4.0",
+    "@turf/flatten": "^7.4.0",
     "@turf/helpers": "^7.4.0",
+    "@turf/kinks": "^7.4.0",
     "@turf/simplify": "^7.4.0",
+    "@turf/truncate": "^7.4.0",
+    "@turf/union": "^7.4.0",
     "d3-geo": "^3.1.1",
     "globe.gl": "^2.46.2",
     "three": "^0.186.0",

@@ -18,8 +18,12 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import * as topojson from 'topojson-client';
-import { geoCentroid, geoArea } from 'd3-geo';
+import { geoCentroid } from 'd3-geo';
+import { union } from '@turf/union';
 import simplify from '@turf/simplify';
+import kinks from '@turf/kinks';
+import truncate from '@turf/truncate';
+import buffer from '@turf/buffer';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -121,6 +125,31 @@ const COUNTRY_TO_TERRITOIRE = {
   'Micronesia': 'oc-outbackpacifique', 'Palau': 'oc-outbackpacifique', 'Marshall Is.': 'oc-outbackpacifique', 'Nauru': 'oc-outbackpacifique',
 };
 
+// Certains territoires (Extrême-Orient russe via la Tchoukotka, Outback/Pacifique via
+// Fidji...) traversent l'antiméridien (180°/-180°). Sans traitement, un anneau qui va de
+// +179° à -179° est interprété comme un aller-retour de 358° autour de tout le globe :
+// forme aberrante, fusion/rendu qui explosent. On "déplie" ces anneaux (ex: 179 puis 181
+// au lieu de 179 puis -179) pour qu'ils restent géométriquement continus ; le rendu final
+// (three-globe) accepte des longitudes hors -180/180 sans problème (fonctions périodiques).
+function unwrapGeometry(geometry) {
+  const rings =
+    geometry.type === 'Polygon' ? geometry.coordinates
+    : geometry.type === 'MultiPolygon' ? geometry.coordinates.flat()
+    : [];
+  let minLon = 999, maxLon = -999;
+  for (const ring of rings) for (const [lon] of ring) { if (lon < minLon) minLon = lon; if (lon > maxLon) maxLon = lon; }
+  // Un même morceau qui contient à la fois des points très à l'est (>150°) et très à
+  // l'ouest (<-150°) traverse presque certainement l'antiméridien plutôt que de couvrir
+  // légitimement toute la largeur du globe. On ramène tout dans un repère continu
+  // (0°→360° pour ce territoire) au lieu du saut +180°/-180°.
+  if (maxLon > 150 && minLon < -150) {
+    const shift = ([lon, lat]) => [lon < 0 ? lon + 360 : lon, lat];
+    if (geometry.type === 'Polygon') geometry.coordinates = geometry.coordinates.map((r) => r.map(shift));
+    else if (geometry.type === 'MultiPolygon') geometry.coordinates = geometry.coordinates.map((p) => p.map((r) => r.map(shift)));
+  }
+  return geometry;
+}
+
 const features = [];
 const unmatched = [];
 
@@ -130,7 +159,7 @@ for (const c of countries) {
   if (name === 'Antarctica') continue;
   const territoireId = COUNTRY_TO_TERRITOIRE[name];
   if (!territoireId) { unmatched.push(name); continue; }
-  features.push({ type: 'Feature', properties: { territoireId }, geometry: c.geometry });
+  features.push({ type: 'Feature', properties: { territoireId }, geometry: unwrapGeometry(c.geometry) });
 }
 
 // ---- 2. Pays subdivisés en États/provinces réels ----
@@ -141,7 +170,7 @@ function addSubdivision(file, nameToTerritoire, propKey = 'name') {
     const name = f.properties[propKey];
     const territoireId = nameToTerritoire[name];
     if (!territoireId) { unmatched.push(`[${file}] ${name}`); continue; }
-    features.push({ type: 'Feature', properties: { territoireId }, geometry: f.geometry });
+    features.push({ type: 'Feature', properties: { territoireId }, geometry: unwrapGeometry(f.geometry) });
   }
 }
 
@@ -232,35 +261,152 @@ addSubdivision('ru-regions.json', {
   'Magadan Oblast': 'ru-extremeorient', 'Kamchatka Krai': 'ru-extremeorient', 'Chukotka Autonomous Okrug': 'ru-extremeorient',
 }, 'name_latin');
 
-// Simplifie les tracés : on assemble un jeu de plateau (échelle territoire), pas une
-// carte de précision. Sans ça, certains États dépassent 20k points et rendent le globe
-// très lourd à afficher et à interagir (raycasting tactile en particulier sur iPad).
-const geojson = simplify({ type: 'FeatureCollection', features }, { tolerance: 0.06, highQuality: false, mutate: true });
+// ---- 3. Fusion : un territoire = une seule forme ----
+// Jusqu'ici chaque pays/État reste une feature séparée (frontières internes visibles).
+// On les fusionne maintenant par territoireId en une seule (multi)géométrie dont le
+// contour est le vrai tracé extérieur de l'ensemble des pays/États qui le composent
+// (les frontières internes disparaissent, la frontière externe reste réelle).
 
-// ---- 3. Centre représentatif de chaque territoire (pour les marqueurs d'usine) ----
-// Moyenne des centroïdes de chaque partie, pondérée par leur aire, pour rester
-// dans la plus grande masse de terre du territoire (utile pour les archipels).
+// Pas de simplification avant la fusion : Douglas-Peucker (turf/simplify) casse la
+// topologie sur des tracés complexes (auto-intersections), ce qui bloque ensuite la
+// triangulation du globe. La fusion elle-même réduit déjà beaucoup le nombre de points
+// (les frontières internes partagées entre pays/États voisins disparaissent).
+//
+// En revanche on arrondit les coordonnées à 10⁻⁵ degré (~1 m) avant fusion : les frontières
+// partagées entre deux pays/États voisins viennent de fichiers sources différents et ne
+// tombent jamais exactement sur les mêmes flottants, ce qui laisse des micro-écarts que la
+// fusion transforme en auto-intersections. Arrondir les fait coïncider exactement.
+for (const f of features) truncate(f, { precision: 5, mutate: true });
+
+// Certaines sources (États brésiliens, russes, australiens en particulier) contiennent des
+// polygones déjà auto-intersectants à la base (défaut du fichier d'origine, ex. Maranhão :
+// 143 auto-intersections avant même toute fusion). On les répare avec un léger "gonflage"
+// géométrique (~11 m, invisible à l'échelle du plateau) qui reconstruit un contour valide.
+function countKinksIn(geometry) {
+  const polys = geometry.type === 'Polygon' ? [geometry] : geometry.coordinates.map((c) => ({ type: 'Polygon', coordinates: c }));
+  let total = 0;
+  for (const p of polys) {
+    try { total += kinks({ type: 'Feature', properties: {}, geometry: p }).features.length; } catch { total += 1; }
+  }
+  return total;
+}
+let repaired = 0;
+for (const f of features) {
+  if (countKinksIn(f.geometry) > 0) {
+    try {
+      const fixed = buffer(f, 0.0001, { units: 'degrees' });
+      if (countKinksIn(fixed.geometry) === 0) { f.geometry = fixed.geometry; repaired++; }
+    } catch { /* laissé tel quel, sera retenté si besoin après fusion */ }
+  }
+}
+if (repaired) console.log(`${repaired} géométrie(s) source(s) réparée(s) (auto-intersections d'origine).`);
+
 const byTerritoire = {};
 for (const f of features) {
   (byTerritoire[f.properties.territoireId] ??= []).push(f);
 }
-const centroides = {};
-for (const [id, feats] of Object.entries(byTerritoire)) {
-  let sx = 0, sy = 0, sw = 0;
-  for (const f of feats) {
-    const area = Math.abs(geoArea(f));
-    const [lon, lat] = geoCentroid(f);
-    if (Number.isNaN(lon) || Number.isNaN(lat)) continue;
-    sx += lon * area; sy += lat * area; sw += area;
+
+const merged = [];
+const fusionEchecs = [];
+
+for (const [territoireId, feats] of Object.entries(byTerritoire)) {
+  let geometry;
+  if (feats.length === 1) {
+    geometry = feats[0].geometry;
+  } else {
+    try {
+      const fc = { type: 'FeatureCollection', features: feats.map((f) => ({ type: 'Feature', properties: {}, geometry: f.geometry })) };
+      const unioned = union(fc);
+      geometry = unioned.geometry;
+    } catch (err) {
+      fusionEchecs.push(`${territoireId}: ${err.message}`);
+      // Repli : on garde les morceaux séparés en une seule MultiPolygon (frontières
+      // internes visibles pour ce territoire seulement, à défaut de mieux).
+      const polys = [];
+      for (const f of feats) {
+        if (f.geometry.type === 'Polygon') polys.push(f.geometry.coordinates);
+        else if (f.geometry.type === 'MultiPolygon') polys.push(...f.geometry.coordinates);
+      }
+      geometry = { type: 'MultiPolygon', coordinates: polys };
+    }
   }
-  centroides[id] = sw > 0 ? [sx / sw, sy / sw] : geoCentroid(feats[0]);
+
+  const feature = { type: 'Feature', properties: { territoireId }, geometry };
+  merged.push(feature);
 }
+
+// ---- 4. Nettoyage et simplification, île par île ----
+// Un territoire fusionné (surtout les archipels : Extrême-Orient russe, Grand Nord
+// canadien, Outback/Pacifique) est une MultiPolygon de centaines de morceaux séparés
+// (chaque île, chaque presqu'île). Valider/réparer la forme entière d'un coup est lent et
+// peu fiable ; on traite chaque morceau indépendamment (rapide, et un gonflage sur une
+// petite île ne peut pas accidentellement chevaucher une île lointaine).
+function countKinksOfPolygon(polygonCoords) {
+  try { return kinks({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: polygonCoords } }).features.length; }
+  catch { return 1; }
+}
+
+function cleanPiece(polygonCoords) {
+  if (countKinksOfPolygon(polygonCoords) === 0) return polygonCoords;
+  const asFeature = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: polygonCoords } };
+  for (const dist of [0.0002, 0.001, 0.005, 0.02]) {
+    try {
+      const fixed = buffer(asFeature, dist, { units: 'degrees' });
+      if (fixed && countKinksOfPolygon(fixed.geometry.coordinates) === 0) return fixed.geometry.coordinates;
+    } catch { /* essaie la distance suivante */ }
+  }
+  for (const tolerance of [0.02, 0.08, 0.2]) {
+    const simplified = simplify(asFeature, { tolerance, highQuality: true, mutate: false });
+    if (countKinksOfPolygon(simplified.geometry.coordinates) === 0) return simplified.geometry.coordinates;
+  }
+  return null; // irréparable : ce morceau (typiquement un minuscule îlot) est abandonné
+}
+
+function simplifyPieceIfValid(polygonCoords) {
+  for (const tolerance of [0.03, 0.015, 0.008, 0.003]) {
+    const simplified = simplify({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: polygonCoords } }, { tolerance, highQuality: true, mutate: false });
+    if (countKinksOfPolygon(simplified.geometry.coordinates) === 0) return simplified.geometry.coordinates;
+  }
+  return polygonCoords;
+}
+
+const abandonedPieces = [];
+for (const feature of merged) {
+  const pieces = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+  const cleaned = [];
+  for (const piece of pieces) {
+    const fixed = cleanPiece(piece);
+    if (fixed) cleaned.push(simplifyPieceIfValid(fixed));
+    else abandonedPieces.push(feature.properties.territoireId);
+  }
+  if (cleaned.length > 0) {
+    feature.geometry = cleaned.length === 1
+      ? { type: 'Polygon', coordinates: cleaned[0] }
+      : { type: 'MultiPolygon', coordinates: cleaned };
+  } // sinon (cas extrême) : on garde la géométrie fusionnée d'origine telle quelle
+}
+
+const centroides = {};
+for (const feature of merged) {
+  const [lon, lat] = geoCentroid(feature);
+  centroides[feature.properties.territoireId] = [lon, lat];
+}
+
+const geojson = { type: 'FeatureCollection', features: merged };
 
 mkdirSync(path.join(root, 'public/geo'), { recursive: true });
 writeFileSync(path.join(root, 'public/geo/territoires.geo.json'), JSON.stringify(geojson));
 writeFileSync(path.join(root, 'public/geo/centroides.json'), JSON.stringify(centroides));
 
-console.log(`OK: ${features.length} formes géographiques écrites dans public/geo/territoires.geo.json`);
+console.log(`OK: ${geojson.features.length} territoires fusionnés écrits dans public/geo/territoires.geo.json`);
+if (fusionEchecs.length) {
+  console.log(`\n${fusionEchecs.length} fusion(s) en échec (repli sur multi-formes non fusionnées) :`);
+  console.log(fusionEchecs.join('\n'));
+}
+if (abandonedPieces.length) {
+  console.log(`\n${abandonedPieces.length} petit(s) morceau(x) irréparable(s) abandonné(s) (îlot négligeable) sur :`);
+  console.log([...new Set(abandonedPieces)].join(', '));
+}
 if (unmatched.length) {
   console.log(`\n${unmatched.length} entités non reconnues (ignorées) :`);
   console.log(unmatched.join(', '));
