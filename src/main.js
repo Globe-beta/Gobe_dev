@@ -8,7 +8,10 @@ const PLAYERS = [
   { name: 'Joueur 3', color: '#2a9d8f' },
   { name: 'Joueur 4', color: '#f4a261' },
 ];
-const NEUTRAL = 'rgba(255,255,255,0.05)'; // territoire non attribué : quasi transparent, laisse voir la vraie carte
+// Couleurs pleines (opaques) uniquement : la transparence force un rendu par
+// tri/mélange alpha bien plus coûteux, ce qui a fait ramer l'appareil de test
+// (dizaines de parois de territoires superposées en transparence).
+const NEUTRAL = '#3a3f4d';
 const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien visible (carré blanc)
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
@@ -159,17 +162,16 @@ function showToast(msg) {
 // ---------- Globe ----------
 const world = new Globe(globeEl)
   .onGlobeReady(() => { window.__globeReady = true; })
-  .globeImageUrl('textures/earth-blue-marble.jpg')
-  .backgroundImageUrl('textures/night-sky.png')
+  .globeImageUrl('textures/earth-day.jpg')
   .backgroundColor('#000010')
   .showAtmosphere(true)
   .atmosphereColor('#6fb1ff')
   .polygonAltitude(0.006)
-  // Territoire non attribué = transparent (la vraie carte reste visible, esthétique
-  // "Google Earth") ; seul un territoire attribué à un joueur reçoit un aplat de couleur.
+  // Couleurs pleines partout (pas de transparence) : la transparence force un rendu
+  // par tri alpha bien plus coûteux et a fait ramer l'appareil de test.
   .polygonCapColor((f) => colorForTerritoire(f.properties.territoireId))
-  .polygonSideColor((f) => (ownership[f.properties.territoireId] === undefined ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.35)'))
-  .polygonStrokeColor(() => 'rgba(255,255,255,0.55)')
+  .polygonSideColor(() => 'rgba(0,0,0,0.3)')
+  .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
   .onPolygonClick((f) => assignTerritoire(f.properties.territoireId))
   .htmlLat((d) => d.lat)
   .htmlLng((d) => d.lon)
