@@ -134,8 +134,8 @@ function showToast(msg) {
 
 // ---------- Globe ----------
 const world = new Globe(globeEl)
-  .globeImageUrl('/textures/earth-dark.jpg')
-  .backgroundImageUrl('/textures/night-sky.png')
+  .globeImageUrl('textures/earth-dark.jpg')
+  .backgroundImageUrl('textures/night-sky.png')
   .backgroundColor('#05070d')
   .showAtmosphere(true)
   .atmosphereColor('#4a6fa5')
@@ -196,8 +196,8 @@ function renderAll() {
 
 // ---------- Chargement des données géographiques ----------
 Promise.all([
-  fetch('/geo/territoires.geo.json').then((r) => r.json()),
-  fetch('/geo/centroides.json').then((r) => r.json()),
+  fetch('geo/territoires.geo.json').then((r) => r.json()),
+  fetch('geo/centroides.json').then((r) => r.json()),
 ]).then(([geo, centroides]) => {
   world.polygonsData(geo.features);
 
