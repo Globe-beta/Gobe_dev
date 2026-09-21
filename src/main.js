@@ -222,6 +222,20 @@ const world = new Globe(globeEl)
 world.pointOfView({ lat: 20, lng: 10, altitude: 2.6 }, 0);
 window.__world = world; // debug uniquement
 
+// Diagnostic : sur un appareil sous pression mémoire (tablette, beaucoup de géométrie),
+// le navigateur peut perdre le contexte WebGL — symptôme typique : tout le globe se met
+// soudainement à s'afficher dans une seule couleur plate, sans lien évident avec l'action
+// qui vient d'être faite. Sans ce message, ça ressemble à un bug de logique alors que
+// c'est en fait le GPU qui a coupé le rendu. On rend ça visible plutôt que de deviner.
+const glCanvas = world.renderer().domElement;
+glCanvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  showError('Contexte WebGL perdu', "L'appareil a coupé le rendu 3D (probablement une limite mémoire/GPU). Recharge la page pour continuer.");
+});
+glCanvas.addEventListener('webglcontextrestored', () => {
+  statusEl.textContent = 'Contexte WebGL restauré — recharge la page si l\'affichage reste incorrect.';
+});
+
 let markersData = [];
 
 function buildMarkerElement(d) {
@@ -271,7 +285,16 @@ function renderAll() {
     const scores = computeScores();
     chip.querySelector('.score').textContent = scores[i].total;
   });
+
+  // Diagnostic : liste explicitement les territoires réellement marqués "attribués" dans
+  // les données, pour pouvoir comparer avec ce qui s'affiche visuellement en cas de doute
+  // (ex. tout le globe qui semble attribué alors que peu de territoires le sont vraiment).
+  if (readyStatusBase) {
+    const owned = Object.keys(ownership);
+    statusEl.textContent = `${readyStatusBase} · attribués(${owned.length}):${owned.join(',') || '—'}`;
+  }
 }
+let readyStatusBase = '';
 
 // ---------- Chargement des données géographiques ----------
 // Un fetch() sans limite peut rester bloqué très longtemps si la connexion faiblit
@@ -330,7 +353,8 @@ function loadGameData(attempt = 1) {
         const topGroup = world.scene().children.find((c) => c.type === 'Group');
         layersOk = topGroup.children.filter((c) => c.children.length > 0).length;
       } catch { /* ignore */ }
-      statusEl.textContent = `Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
+      readyStatusBase = `Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
+      renderAll();
     }, 1200);
   }).catch((err) => {
     if (attempt < 3) {
