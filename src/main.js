@@ -272,11 +272,37 @@ function assignTerritoire(id) {
   }
 }
 
+// Un territoire une fois créé dans la scène 3D (à la première réception des données) n'est
+// plus jamais recréé : seul son matériau doit changer quand il est attribué. Plutôt que de
+// repasser par polygonCapMaterial/polygonSideMaterial (qui déclenchent un cycle de mise à
+// jour interne à la bibliothèque, avec anti-rebond, dont le comportement exact lors
+// d'appels répétés n'est pas garanti), on modifie directement les objets Three.js déjà
+// présents dans la scène : moins de surprise, et un contrôle total sur ce qui change vraiment.
+function applyMaterialsDirectly() {
+  let updated = 0;
+  world.scene().traverse((obj) => {
+    if (obj.__globeObjType !== 'polygon') return;
+    const conic = obj.children[0];
+    if (!conic || !Array.isArray(conic.material)) return;
+    const feature = obj.__data && obj.__data.data;
+    const id = feature && feature.properties && feature.properties.territoireId;
+    if (!id) return;
+    conic.material[0] = sideMaterialForTerritoire(id);
+    conic.material[1] = capMaterialForTerritoire(id);
+    updated++;
+  });
+  return updated;
+}
+
 function renderAll() {
-  // Ré-invoque les accesseurs de matériau (sans re-fournir les données géographiques :
-  // seul le matériau des territoires déjà tracés est mis à jour, pas leur géométrie).
-  world.polygonCapMaterial(world.polygonCapMaterial());
-  world.polygonSideMaterial(world.polygonSideMaterial());
+  const updated = applyMaterialsDirectly();
+  if (updated === 0) {
+    // Les objets 3D n'existent pas encore (tout premier rendu, avant que la bibliothèque
+    // n'ait fini de créer les maillages) : on retombe sur les accesseurs normaux, qui
+    // s'appliqueront dès que polygonsData() aura fait son travail initial.
+    world.polygonCapMaterial((f) => capMaterialForTerritoire(f.properties.territoireId));
+    world.polygonSideMaterial((f) => sideMaterialForTerritoire(f.properties.territoireId));
+  }
   // Rafraîchit les marqueurs (nouvelle référence de tableau pour forcer le re-rendu des couleurs)
   world.htmlElementsData([...markersData]);
 
@@ -289,9 +315,11 @@ function renderAll() {
   // Diagnostic : liste explicitement les territoires réellement marqués "attribués" dans
   // les données, pour pouvoir comparer avec ce qui s'affiche visuellement en cas de doute
   // (ex. tout le globe qui semble attribué alors que peu de territoires le sont vraiment).
+  // "maj:N" indique combien d'objets 3D ont été mis à jour directement (devrait valoir 47
+  // une fois les données chargées ; 0 signifierait un repli sur l'ancien mécanisme).
   if (readyStatusBase) {
     const owned = Object.keys(ownership);
-    statusEl.textContent = `${readyStatusBase} · attribués(${owned.length}):${owned.join(',') || '—'}`;
+    statusEl.textContent = `${readyStatusBase} · maj:${updated} · attribués(${owned.length}):${owned.join(',') || '—'}`;
   }
 }
 let readyStatusBase = '';
