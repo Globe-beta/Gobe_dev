@@ -8,7 +8,8 @@ const PLAYERS = [
   { name: 'Joueur 3', color: '#2a9d8f' },
   { name: 'Joueur 4', color: '#f4a261' },
 ];
-const NEUTRAL = '#3a3f4d';
+const NEUTRAL = 'rgba(255,255,255,0.05)'; // territoire non attribué : quasi transparent, laisse voir la vraie carte
+const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien visible (carré blanc)
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
@@ -23,6 +24,11 @@ for (const t of TERRITOIRES) {
 function colorForTerritoire(id) {
   const p = ownership[id];
   return p === undefined ? NEUTRAL : PLAYERS[p].color;
+}
+
+function markerColorForTerritoire(id) {
+  const p = ownership[id];
+  return p === undefined ? MARKER_NEUTRAL : PLAYERS[p].color;
 }
 
 function resourceLabel(r) {
@@ -173,15 +179,17 @@ function showToast(msg) {
 // ---------- Globe ----------
 const world = new Globe(globeEl)
   .onGlobeReady(() => { window.__globeReady = true; })
-  .globeImageUrl('textures/earth-dark.jpg')
+  .globeImageUrl('textures/earth-blue-marble.jpg')
   .backgroundImageUrl('textures/night-sky.png')
-  .backgroundColor('#05070d')
+  .backgroundColor('#000010')
   .showAtmosphere(true)
-  .atmosphereColor('#4a6fa5')
+  .atmosphereColor('#6fb1ff')
   .polygonAltitude(0.006)
+  // Territoire non attribué = transparent (la vraie carte reste visible, esthétique
+  // "Google Earth") ; seul un territoire attribué à un joueur reçoit un aplat de couleur.
   .polygonCapColor((f) => colorForTerritoire(f.properties.territoireId))
-  .polygonSideColor(() => 'rgba(0,0,0,0.3)')
-  .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
+  .polygonSideColor((f) => (ownership[f.properties.territoireId] === undefined ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.35)'))
+  .polygonStrokeColor(() => 'rgba(255,255,255,0.55)')
   .polygonLabel((f) => tooltipHtml(f.properties.territoireId))
   .onPolygonClick((f) => assignTerritoire(f.properties.territoireId))
   .htmlLat((d) => d.lat)
@@ -198,12 +206,12 @@ function buildMarkerElement(d) {
   const el = document.createElement('div');
   if (d.type === 'city') {
     el.className = `city-marker slots-${Math.min(d.slots, 3)}`;
-    el.style.background = colorForTerritoire(d.territoireId);
+    el.style.background = markerColorForTerritoire(d.territoireId);
     el.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     el.onclick = (ev) => { ev.stopPropagation(); assignTerritoire(d.territoireId); };
   } else {
     el.className = 'factory-marker';
-    el.style.borderColor = colorForTerritoire(d.territoireId) === NEUTRAL ? 'rgba(255,255,255,0.85)' : colorForTerritoire(d.territoireId);
+    el.style.borderColor = markerColorForTerritoire(d.territoireId);
   }
   return el;
 }
