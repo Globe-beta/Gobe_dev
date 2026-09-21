@@ -26,22 +26,29 @@ const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien vis
 // territoires non attribués avec la même couleur, symptôme qui n'a pu être reproduit dans
 // aucun test automatisé mais qui disparaît par construction si aucune référence de
 // matériau n'est jamais partagée entre deux territoires différents.
+// Index dans les tableaux ci-dessous : 0 = non attribué, 1..4 = joueur 1..4, dernier = en
+// cours de sélection (surbrillance, avant confirmation de l'attribution).
+const HIGHLIGHT_INDEX = PLAYERS.length + 1;
 const capMaterialsById = new Map();
 const sideMaterialsById = new Map();
 for (const t of TERRITOIRES) {
   capMaterialsById.set(t.id, [
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
     ...PLAYERS.map((p) => new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide })),
+    new THREE.MeshBasicMaterial({ color: 0xffe066, side: THREE.DoubleSide }),
   ]);
   sideMaterialsById.set(t.id, [
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
     ...PLAYERS.map(() => new THREE.MeshBasicMaterial({ color: 0x141414, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide })),
+    new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide }),
   ]);
 }
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
 let activePlayer = 0;
+// Territoire actuellement touché, en attente de confirmation ("Envahir") | null si aucun.
+let selectedId = null;
 
 // Régions -> liste de territoireId (pour la détection "région intégrée")
 const territoiresParRegion = {};
@@ -49,14 +56,18 @@ for (const t of TERRITOIRES) {
   (territoiresParRegion[t.region] ??= []).push(t.id);
 }
 
-function capMaterialForTerritoire(id) {
+function materialIndexForTerritoire(id) {
+  if (id === selectedId) return HIGHLIGHT_INDEX;
   const p = ownership[id];
-  return capMaterialsById.get(id)[p === undefined ? 0 : p + 1];
+  return p === undefined ? 0 : p + 1;
+}
+
+function capMaterialForTerritoire(id) {
+  return capMaterialsById.get(id)[materialIndexForTerritoire(id)];
 }
 
 function sideMaterialForTerritoire(id) {
-  const p = ownership[id];
-  return sideMaterialsById.get(id)[p === undefined ? 0 : p + 1];
+  return sideMaterialsById.get(id)[materialIndexForTerritoire(id)];
 }
 
 function markerColorForTerritoire(id) {
@@ -176,7 +187,7 @@ const legend = document.createElement('div');
 legend.className = 'legend';
 legend.innerHTML = `
   <div><b>47 territoires</b> · 22 régions · 18 villes</div>
-  <div class="row"><span class="sq" style="border-radius:50%"></span> touchez un territoire pour l'attribuer au joueur actif</div>
+  <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="sq"></span> ville (carré, taille = slots)</div>
   <div class="row"><span class="sq" style="transform:rotate(45deg)"></span> slot Industrie</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
@@ -194,6 +205,40 @@ function showToast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
 }
+
+// Barre de confirmation d'invasion : touchez un territoire pour le sélectionner (surbrillance
+// jaune) sans l'attribuer tout de suite, puis confirmez avec "Envahir". Ça sépare le geste
+// tactile (imprécis, surtout pendant une rotation du globe) de l'attribution elle-même : une
+// sélection déclenchée par erreur ne coûte rien, seule une confirmation explicite compte.
+const invadeBar = document.createElement('div');
+invadeBar.className = 'invade-bar';
+const invadeLabel = document.createElement('span');
+const invadeBtn = document.createElement('button');
+invadeBtn.className = 'btn';
+invadeBtn.textContent = 'Envahir';
+const cancelBtn = document.createElement('button');
+cancelBtn.className = 'btn';
+cancelBtn.textContent = 'Annuler';
+invadeBar.append(invadeLabel, invadeBtn, cancelBtn);
+app.appendChild(invadeBar);
+
+function selectTerritoire(id) {
+  selectedId = id;
+  renderAll();
+}
+
+function clearSelection() {
+  selectedId = null;
+  renderAll();
+}
+
+invadeBtn.onclick = () => {
+  if (!selectedId) return;
+  assignTerritoire(selectedId);
+  selectedId = null;
+  renderAll();
+};
+cancelBtn.onclick = clearSelection;
 
 // ---------- Détection tapotement propre vs glissement (rotation du globe) ----------
 // three-globe déclenche onPolygonClick sur l'événement 'click' du canvas ; sur iPad, un
@@ -231,7 +276,7 @@ const world = new Globe(globeEl)
   .polygonCapMaterial((f) => capMaterialForTerritoire(f.properties.territoireId))
   .polygonSideMaterial((f) => sideMaterialForTerritoire(f.properties.territoireId))
   .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
-  .onPolygonClick((f) => { if (!wasCleanTap()) return; assignTerritoire(f.properties.territoireId); })
+  .onPolygonClick((f) => { if (!wasCleanTap()) return; selectTerritoire(f.properties.territoireId); })
   .htmlLat((d) => d.lat)
   .htmlLng((d) => d.lon)
   .htmlAltitude(0.012)
@@ -262,7 +307,7 @@ function buildMarkerElement(d) {
     el.className = `city-marker slots-${Math.min(d.slots, 3)}`;
     el.style.background = markerColorForTerritoire(d.territoireId);
     el.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
-    el.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; assignTerritoire(d.territoireId); };
+    el.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
   } else {
     el.className = 'factory-marker';
     el.style.borderColor = markerColorForTerritoire(d.territoireId);
@@ -270,16 +315,10 @@ function buildMarkerElement(d) {
   return el;
 }
 
-// Sur écran tactile, un tapotement peut déclencher plusieurs "clics" d'affilée si le
-// doigt bouge légèrement (le geste est alors aussi interprété comme une rotation du
-// globe). Sans ça, un seul tapotement pouvait attribuer plusieurs territoires voisins
-// à la suite. On ignore toute nouvelle attribution moins de 400 ms après la précédente.
-let lastAssignAt = 0;
+// Appelée uniquement depuis le bouton "Envahir" (confirmation explicite) : plus besoin
+// d'anti-rebond ici, un tapotement imprécis ne fait plus que sélectionner (voir
+// selectTerritoire), jamais attribuer directement.
 function assignTerritoire(id) {
-  const now = Date.now();
-  if (now - lastAssignAt < 400) return;
-  lastAssignAt = now;
-
   const region = TERRITOIRE_PAR_ID[id]?.region;
   ownership[id] = activePlayer;
   renderAll();
@@ -329,6 +368,14 @@ function renderAll() {
     const scores = computeScores();
     chip.querySelector('.score').textContent = scores[i].total;
   });
+
+  if (selectedId) {
+    const t = TERRITOIRE_PAR_ID[selectedId];
+    invadeLabel.textContent = `${t ? t.nom : selectedId} → ${PLAYERS[activePlayer].name} ?`;
+    invadeBar.classList.add('show');
+  } else {
+    invadeBar.classList.remove('show');
+  }
 
   // Diagnostic : liste explicitement les territoires réellement marqués "attribués" dans
   // les données, pour pouvoir comparer avec ce qui s'affiche visuellement en cas de doute
