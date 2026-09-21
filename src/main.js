@@ -234,11 +234,18 @@ function renderAll() {
 }
 
 // ---------- Chargement des données géographiques ----------
-function fetchJson(url) {
-  return fetch(url).then((r) => {
-    if (!r.ok) throw new Error(`HTTP ${r.status} sur ${url}`);
-    return r.json();
-  });
+// Un fetch() sans limite peut rester bloqué très longtemps si la connexion faiblit
+// en cours de route (ni résolu, ni rejeté) : on ajoute un délai maximum, pour échouer
+// vite et pouvoir réessayer, plutôt que de rester sur "Chargement…" indéfiniment.
+function fetchJson(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { signal: controller.signal })
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status} sur ${url}`);
+      return r.json();
+    })
+    .finally(() => clearTimeout(timer));
 }
 
 // Cache-busting : geo/*.json ont un nom fixe (pas de hash comme les assets JS/CSS),
@@ -246,45 +253,64 @@ function fetchJson(url) {
 // rechargement en accrochant l'identifiant de build à l'URL.
 const cacheBust = typeof __BUILD_ID__ !== 'undefined' ? `?v=${encodeURIComponent(__BUILD_ID__)}` : `?v=${Date.now()}`;
 
-statusEl.textContent = 'Chargement des données géographiques…';
-Promise.all([
-  fetchJson('geo/territoires.geo.json' + cacheBust),
-  fetchJson('geo/centroides.json' + cacheBust),
-]).then(([geo, centroides]) => {
-  function countPoints(geom) {
-    const rings = geom.type === 'Polygon' ? geom.coordinates : geom.coordinates.flat();
-    return rings.reduce((a, r) => a + r.length, 0);
-  }
-  const totalPoints = geo.features.reduce((a, f) => a + countPoints(f.geometry), 0);
-  statusEl.textContent = `Prêt (${geo.features.length} terr., ${totalPoints} pts géo)`;
-  world.polygonsData(geo.features);
+function countPoints(geom) {
+  const rings = geom.type === 'Polygon' ? geom.coordinates : geom.coordinates.flat();
+  return rings.reduce((a, r) => a + r.length, 0);
+}
 
-  markersData = [];
-  for (const t of TERRITOIRES) {
-    if (t.ville) {
-      markersData.push({ type: 'city', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots, lat: t.ville.lat, lon: t.ville.lon });
-    }
-    if (t.slotIndustrie && centroides[t.id]) {
-      const [lon, lat] = centroides[t.id];
-      markersData.push({ type: 'factory', territoireId: t.id, lat, lon });
-    }
-  }
-  world.htmlElementsData(markersData);
-  renderAll();
+function loadGameData(attempt = 1) {
+  statusEl.textContent = attempt === 1 ? 'Chargement des données géographiques…' : `Nouvelle tentative (${attempt}/3)…`;
+  errorBanner.style.display = 'none';
 
-  setTimeout(() => {
-    const domMarkers = document.querySelectorAll('.city-marker, .factory-marker').length;
-    let layersOk = '?';
-    try {
-      const topGroup = world.scene().children.find((c) => c.type === 'Group');
-      layersOk = topGroup.children.filter((c) => c.children.length > 0).length;
-    } catch { /* ignore */ }
-    statusEl.textContent = `Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
-  }, 1200);
-}).catch((err) => {
-  statusEl.textContent = 'Échec du chargement';
-  showError('Impossible de charger les données géographiques', String(err));
-});
+  Promise.all([
+    fetchJson('geo/territoires.geo.json' + cacheBust),
+    fetchJson('geo/centroides.json' + cacheBust),
+  ]).then(([geo, centroides]) => {
+    const totalPoints = geo.features.reduce((a, f) => a + countPoints(f.geometry), 0);
+    statusEl.textContent = `Prêt (${geo.features.length} terr., ${totalPoints} pts géo)`;
+    world.polygonsData(geo.features);
+
+    markersData = [];
+    for (const t of TERRITOIRES) {
+      if (t.ville) {
+        markersData.push({ type: 'city', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots, lat: t.ville.lat, lon: t.ville.lon });
+      }
+      if (t.slotIndustrie && centroides[t.id]) {
+        const [lon, lat] = centroides[t.id];
+        markersData.push({ type: 'factory', territoireId: t.id, lat, lon });
+      }
+    }
+    world.htmlElementsData(markersData);
+    renderAll();
+
+    setTimeout(() => {
+      const domMarkers = document.querySelectorAll('.city-marker, .factory-marker').length;
+      let layersOk = '?';
+      try {
+        const topGroup = world.scene().children.find((c) => c.type === 'Group');
+        layersOk = topGroup.children.filter((c) => c.children.length > 0).length;
+      } catch { /* ignore */ }
+      statusEl.textContent = `Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
+    }, 1200);
+  }).catch((err) => {
+    if (attempt < 3) {
+      setTimeout(() => loadGameData(attempt + 1), 1500);
+      return;
+    }
+    statusEl.textContent = 'Échec du chargement (connexion instable ?)';
+    showError(
+      'Impossible de charger les données géographiques',
+      `${err}\n\nTa connexion a peut-être coupé pendant le téléchargement. Vérifie ton réseau et réessaie.`,
+    );
+    const retryBtn = document.createElement('button');
+    retryBtn.textContent = 'Réessayer';
+    retryBtn.style.cssText = 'margin-top:8px;padding:10px 20px;border-radius:8px;border:none;background:#fff;color:#1a0505;font-weight:700;font-size:14px;';
+    retryBtn.onclick = () => loadGameData(1);
+    errorBanner.appendChild(retryBtn);
+  });
+}
+
+loadGameData();
 
 window.addEventListener('resize', () => {
   world.width(window.innerWidth).height(window.innerHeight);
