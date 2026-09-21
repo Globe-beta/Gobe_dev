@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import Globe from 'globe.gl';
 import './style.css';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
@@ -8,19 +9,23 @@ const PLAYERS = [
   { name: 'Joueur 3', color: '#2a9d8f' },
   { name: 'Joueur 4', color: '#f4a261' },
 ];
-// Territoires non attribués : entièrement invisibles (alpha 0), pas juste semi-transparents.
-// Un remplissage semi-transparent (essayé précédemment) crée un conflit de profondeur avec
-// la paroi latérale du territoire à l'endroit exact du littoral (les deux sont à une
-// altitude quasi nulle l'une contre l'autre) : ça donne un scintillement en dents de scie
-// le long des côtes et, avec des dizaines de territoires concernés, ça finit par assombrir
-// toute la texture terrestre au lieu de la laisser apparaître. En alpha 0, rien n'est
-// mélangé (aucune couleur à trier avec quoi que ce soit) : la texture se voit telle quelle,
-// sans artefact. Les territoires restent cliquables (la géométrie existe toujours), seul le
-// rendu visuel change une fois attribués à un joueur (couleur pleine, opaque, sans souci).
-const NEUTRAL = 'rgba(0,0,0,0)';
-const NEUTRAL_SIDE = 'rgba(0,0,0,0)';
-const CLAIMED_SIDE = 'rgba(20,20,20,0.55)';
 const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien visible (carré blanc)
+
+// Matériaux du globe : on passe par de vrais THREE.Material (polygonCapMaterial /
+// polygonSideMaterial) plutôt que par des chaînes de couleur CSS (polygonCapColor /
+// polygonSideColor). three-globe applique par défaut depthWrite:true à ses matériaux
+// internes même quand ils sont rendus invisibles par transparence — un territoire non
+// attribué (alpha 0) écrit alors quand même dans le tampon de profondeur, ce qui peut
+// perturber le tri des surfaces transparentes voisines (parois, contours). En fournissant
+// nos propres matériaux avec depthWrite:false pour tout ce qui est invisible ou semi-
+// transparent, on élimine ce risque à la source. Un petit nombre d'instances partagées
+// (une par état : non attribué, ou par joueur) plutôt qu'une par territoire : moins de
+// création d'objets, et le rendu peut être basculé instantanément en changeant juste la
+// référence de matériau utilisée.
+const capMaterialUnclaimed = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+const sideMaterialUnclaimed = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+const capMaterialsByPlayer = PLAYERS.map((p) => new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide }));
+const sideMaterialsByPlayer = PLAYERS.map(() => new THREE.MeshBasicMaterial({ color: 0x141414, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }));
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
@@ -32,13 +37,14 @@ for (const t of TERRITOIRES) {
   (territoiresParRegion[t.region] ??= []).push(t.id);
 }
 
-function colorForTerritoire(id) {
+function capMaterialForTerritoire(id) {
   const p = ownership[id];
-  return p === undefined ? NEUTRAL : PLAYERS[p].color;
+  return p === undefined ? capMaterialUnclaimed : capMaterialsByPlayer[p];
 }
 
-function sideColorForTerritoire(id) {
-  return ownership[id] === undefined ? NEUTRAL_SIDE : CLAIMED_SIDE;
+function sideMaterialForTerritoire(id) {
+  const p = ownership[id];
+  return p === undefined ? sideMaterialUnclaimed : sideMaterialsByPlayer[p];
 }
 
 function markerColorForTerritoire(id) {
@@ -204,8 +210,8 @@ const world = new Globe(globeEl)
   .showAtmosphere(true)
   .atmosphereColor('#6fb1ff')
   .polygonAltitude(0.006)
-  .polygonCapColor((f) => colorForTerritoire(f.properties.territoireId))
-  .polygonSideColor((f) => sideColorForTerritoire(f.properties.territoireId))
+  .polygonCapMaterial((f) => capMaterialForTerritoire(f.properties.territoireId))
+  .polygonSideMaterial((f) => sideMaterialForTerritoire(f.properties.territoireId))
   .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
   .onPolygonClick((f) => { if (!wasCleanTap()) return; assignTerritoire(f.properties.territoireId); })
   .htmlLat((d) => d.lat)
@@ -253,10 +259,10 @@ function assignTerritoire(id) {
 }
 
 function renderAll() {
-  // Ré-invoque les accesseurs de couleur (sans re-fournir les données géographiques :
+  // Ré-invoque les accesseurs de matériau (sans re-fournir les données géographiques :
   // seul le matériau des territoires déjà tracés est mis à jour, pas leur géométrie).
-  world.polygonCapColor(world.polygonCapColor());
-  world.polygonSideColor(world.polygonSideColor());
+  world.polygonCapMaterial(world.polygonCapMaterial());
+  world.polygonSideMaterial(world.polygonSideMaterial());
   // Rafraîchit les marqueurs (nouvelle référence de tableau pour forcer le re-rendu des couleurs)
   world.htmlElementsData([...markersData]);
 
