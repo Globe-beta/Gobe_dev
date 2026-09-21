@@ -177,7 +177,6 @@ const world = new Globe(globeEl)
   .showAtmosphere(true)
   .atmosphereColor('#4a6fa5')
   .polygonAltitude(0.006)
-  .polygonsTransitionDuration(0)
   .polygonCapColor((f) => colorForTerritoire(f.properties.territoireId))
   .polygonSideColor(() => 'rgba(0,0,0,0.3)')
   .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
@@ -259,6 +258,12 @@ Promise.all([
   }
   world.htmlElementsData(markersData);
   renderAll();
+
+  setTimeout(() => {
+    const domMarkers = document.querySelectorAll('.city-marker, .factory-marker').length;
+    const sceneObjs = world.scene ? world.scene().children.length : '?';
+    statusEl.textContent = `Prêt (${geo.features.length} terr.) · scène:${sceneObjs} · marqueurs DOM:${domMarkers}`;
+  }, 800);
 }).catch((err) => {
   statusEl.textContent = 'Échec du chargement';
   showError('Impossible de charger les données géographiques', String(err));
