@@ -20,29 +20,27 @@ const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien vis
 // nos propres matériaux avec depthWrite:false pour tout ce qui est invisible ou semi-
 // transparent, on élimine ce risque à la source.
 //
-// Une instance de matériau DÉDIÉE par territoire (et par état : non attribué ou par
-// joueur), plutôt que des instances partagées entre territoires : sur l'appareil de test,
-// un territoire attribué à un joueur a fini par visuellement "contaminer" tous les autres
-// territoires non attribués avec la même couleur, symptôme qui n'a pu être reproduit dans
-// aucun test automatisé mais qui disparaît par construction si aucune référence de
-// matériau n'est jamais partagée entre deux territoires différents.
-// Index dans les tableaux ci-dessous : 0 = non attribué, 1..4 = joueur 1..4, dernier = en
-// cours de sélection (surbrillance, avant confirmation de l'attribution).
-const HIGHLIGHT_INDEX = PLAYERS.length + 1;
+// Une seule instance de matériau PERMANENTE par territoire (jamais remplacée), dont on
+// modifie les propriétés (couleur, opacité) en place. Deux approches précédentes ont
+// échoué de façon identique sur l'appareil de test — un territoire correct, tous les
+// autres avec la mauvaise couleur, quel que soit le nombre de territoires réellement
+// touchés (y compris un seul) : (1) des instances de matériau partagées entre
+// territoires, (2) des instances dédiées par territoire mais REMPLACÉES (changement de
+// référence, conic.material[i] = autreInstance) à chaque changement d'état. Remplacer une
+// référence de matériau force le moteur de rendu à retraiter l'objet (nouveau programme/
+// uniformes à lier) ; modifier les propriétés d'un objet déjà en place est un chemin bien
+// plus courant et éprouvé. Si le souci vient d'une confusion d'état côté pilote graphique
+// après un changement de RÉFÉRENCE de matériau, ça devrait disparaître ici puisque la
+// référence, elle, ne change jamais.
 const capMaterialsById = new Map();
 const sideMaterialsById = new Map();
 for (const t of TERRITOIRES) {
-  capMaterialsById.set(t.id, [
-    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
-    ...PLAYERS.map((p) => new THREE.MeshBasicMaterial({ color: p.color, side: THREE.DoubleSide })),
-    new THREE.MeshBasicMaterial({ color: 0xffe066, side: THREE.DoubleSide }),
-  ]);
-  sideMaterialsById.set(t.id, [
-    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }),
-    ...PLAYERS.map(() => new THREE.MeshBasicMaterial({ color: 0x141414, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide })),
-    new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide }),
-  ]);
+  capMaterialsById.set(t.id, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
+  sideMaterialsById.set(t.id, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
 }
+const PLAYER_COLORS = PLAYERS.map((p) => new THREE.Color(p.color));
+const HIGHLIGHT_COLOR = new THREE.Color(0xffe066);
+const OWNED_SIDE_COLOR = new THREE.Color(0x141414);
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
@@ -56,18 +54,53 @@ for (const t of TERRITOIRES) {
   (territoiresParRegion[t.region] ??= []).push(t.id);
 }
 
-function materialIndexForTerritoire(id) {
-  if (id === selectedId) return HIGHLIGHT_INDEX;
-  const p = ownership[id];
-  return p === undefined ? 0 : p + 1;
-}
-
+// Modifie EN PLACE les propriétés du matériau déjà assigné à ce territoire (jamais de
+// remplacement de référence). Retourne la même instance, pour rester compatible avec
+// polygonCapMaterial/polygonSideMaterial qui s'attendent à recevoir un matériau.
 function capMaterialForTerritoire(id) {
-  return capMaterialsById.get(id)[materialIndexForTerritoire(id)];
+  const mat = capMaterialsById.get(id);
+  if (id === selectedId) {
+    mat.color.copy(HIGHLIGHT_COLOR);
+    mat.opacity = 1;
+    mat.transparent = false;
+    mat.depthWrite = true;
+    return mat;
+  }
+  const p = ownership[id];
+  if (p === undefined) {
+    mat.opacity = 0;
+    mat.transparent = true;
+    mat.depthWrite = false;
+    return mat;
+  }
+  mat.color.copy(PLAYER_COLORS[p]);
+  mat.opacity = 1;
+  mat.transparent = false;
+  mat.depthWrite = true;
+  return mat;
 }
 
 function sideMaterialForTerritoire(id) {
-  return sideMaterialsById.get(id)[materialIndexForTerritoire(id)];
+  const mat = sideMaterialsById.get(id);
+  if (id === selectedId) {
+    mat.color.copy(HIGHLIGHT_COLOR);
+    mat.opacity = 0.7;
+    mat.transparent = true;
+    mat.depthWrite = false;
+    return mat;
+  }
+  const p = ownership[id];
+  if (p === undefined) {
+    mat.opacity = 0;
+    mat.transparent = true;
+    mat.depthWrite = false;
+    return mat;
+  }
+  mat.color.copy(OWNED_SIDE_COLOR);
+  mat.opacity = 0.55;
+  mat.transparent = true;
+  mat.depthWrite = false;
+  return mat;
 }
 
 function markerColorForTerritoire(id) {
