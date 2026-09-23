@@ -12,7 +12,13 @@ const PLAYERS = [
   { name: 'Joueur 3', color: '#2a9d8f' },
   { name: 'Joueur 4', color: '#f4a261' },
 ];
-const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien visible (carré blanc)
+const MARKER_NEUTRAL = '#8a8f9c'; // liseré des marqueurs ville/usine non attribués
+
+// Symboles des marqueurs ville/usine — mêmes silhouettes partout (sur le globe ET dans la
+// légende), pour que la légende corresponde exactement à ce qu'on voit sur la carte. Formes
+// pleines simples (pas de traits fins) : à la taille d'un marqueur, un trait fin disparaît.
+const CITY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="3" y="10" width="6" height="11"/><rect x="10" y="4" width="6" height="17"/><rect x="17" y="13" width="4" height="8"/></svg>';
+const FACTORY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="2" y="12" width="20" height="9"/><rect x="5" y="6" width="3" height="7"/><rect x="11" y="3" width="3" height="10"/><rect x="17" y="8" width="3" height="5"/></svg>';
 
 // ---------- Rendu des territoires : une texture peinte, pas 195 objets 3D ----------
 // Nouvelle approche, plus simple et avec moins de pièces mobiles que la précédente
@@ -26,8 +32,13 @@ const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien vis
 // touché sur le globe, et on cherche par calcul géométrique simple quel territoire les
 // contient (point-in-polygon). Beaucoup moins de code, beaucoup moins de surface pour un
 // bug de rendu.
-const TEX_W = 1600;
-const TEX_H = 800;
+// Résolution de la texture peinte sur le globe. Plus haute que le strict nécessaire pour
+// l'apparence au repos (vue de la Terre entière) : les noms de territoires sont du texte
+// matriciel — en zoomant sur un pays, la caméra agrandit les pixels déjà peints, donc plus
+// il y a de pixels sources par lettre, moins c'est pixelisé une fois agrandi. 4096 reste
+// dans la limite de taille de texture supportée par à peu près tous les appareils/GPU.
+const TEX_W = 4096;
+const TEX_H = 2048;
 const projection = geoEquirectangular().scale(TEX_W / (2 * Math.PI)).translate([TEX_W / 2, TEX_H / 2]);
 const path = geoPath(projection);
 
@@ -111,10 +122,14 @@ function computeLabelAnchor(geometry) {
 }
 
 // Même taille de police, minuscule, pour tous les territoires (dans l'espace de la texture,
-// qui couvre toute la Terre en 1600x800 px) : à l'échelle du globe entier le nom est presque
-// invisible, volontairement discret ; en zoomant sur un pays ou une région, la même caméra
-// qui grossit la carte grossit aussi ce texte, qui devient lisible sans rien recalculer.
-const LABEL_FONT_SIZE = 7;
+// qui couvre toute la Terre en TEX_W x TEX_H px) : à l'échelle du globe entier le nom est
+// presque invisible, volontairement discret ; en zoomant sur un pays ou une région, la même
+// caméra qui grossit la carte grossit aussi ce texte, qui devient lisible sans rien
+// recalculer. Exprimée en fraction de la largeur de la texture (pas en pixels fixes) : avec
+// TEX_W=4096, ça donne ~9px — plus petit, à l'écran, que les 7px de l'ancienne texture à
+// 1600px de large (9/4096 < 7/1600), mais dessiné avec davantage de pixels sources, donc
+// moins pixelisé une fois agrandi par le zoom.
+const LABEL_FONT_SIZE = Math.round(TEX_W * 0.0022);
 
 // Dessine le nom de chaque territoire, toujours à la même place (calculée une seule fois,
 // voir computeLabelAnchor). Un contour sombre derrière le texte blanc le garde lisible quel
@@ -124,7 +139,7 @@ function drawLabels(ctx) {
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   ctx.font = `${LABEL_FONT_SIZE}px system-ui, sans-serif`;
-  ctx.lineWidth = 1.2;
+  ctx.lineWidth = LABEL_FONT_SIZE * 0.16;
   ctx.strokeStyle = 'rgba(0,0,0,0.85)';
   ctx.fillStyle = '#ffffff';
   for (const t of TERRITOIRES) {
@@ -142,6 +157,10 @@ let liveCanvas = null;
 let liveCtx = null;
 let globeTexture = null;
 
+// Épaisseur des frontières de région dans l'image de sortie (rayon, en px de texture, du
+// carré peint autour de chaque pixel de frontière détecté — voir plus bas).
+const REGION_BORDER_RADIUS = Math.round(TEX_W * 0.0018);
+
 // Calcule une image (même résolution que la texture) qui ne contient que les frontières
 // EXTÉRIEURES des régions, chacune dans sa propre couleur — jamais les frontières internes
 // entre deux territoires d'une même région. Approche par pixels plutôt que par fusion
@@ -152,11 +171,16 @@ let globeTexture = null;
 // tous ses territoires sont peints dans le MÊME blanc opaque sur un canvas à part, ce qui
 // rend sa frontière interne invisible (blanc sur blanc, pas d'ambiguïté de couleur, même
 // avec l'anti-aliasing du canvas). Un pixel plein (canal alpha > seuil) dont au moins un des
-// 4 voisins est vide est alors un pixel de frontière EXTÉRIEURE de cette région, peint dans
-// sa couleur sur l'image de sortie. Traiter les régions séparément (plutôt qu'un seul canvas
-// partagé avec un identifiant par région) évite tout risque qu'un pixel à la frontière entre
-// deux régions DIFFÉRENTES se retrouve, à cause du fondu de l'anti-aliasing, avec une valeur
-// intermédiaire qui ressemblerait par hasard à l'identifiant d'une troisième région.
+// 4 voisins est vide est alors un pixel de frontière EXTÉRIEURE de cette région ; on peint un
+// petit carré (REGION_BORDER_RADIUS) autour de lui dans l'image de sortie, pour obtenir un
+// trait plus épais qu'un simple contour de 1px. Traiter les régions séparément (plutôt qu'un
+// seul canvas partagé avec un identifiant par région) évite tout risque qu'un pixel à la
+// frontière entre deux régions DIFFÉRENTES se retrouve, à cause du fondu de l'anti-aliasing,
+// avec une valeur intermédiaire qui ressemblerait par hasard à l'identifiant d'une troisième
+// région. Le travail par région est limité à son rectangle englobant (pas le canvas entier) :
+// une région n'occupe généralement qu'une petite fraction de la carte, et à la résolution de
+// texture actuelle (4096x2048), parcourir les 22 régions sur l'image entière serait bien
+// trop lent.
 function computeRegionBorderOverlay() {
   const maskCanvas = document.createElement('canvas');
   maskCanvas.width = TEX_W;
@@ -170,33 +194,55 @@ function computeRegionBorderOverlay() {
   const overlayCtx = overlay.getContext('2d');
   const overlayData = overlayCtx.createImageData(TEX_W, TEX_H);
   const out = overlayData.data;
-
-  const ALPHA_THRESHOLD = 127;
-
-  for (const region of REGIONS) {
-    maskCtx.clearRect(0, 0, TEX_W, TEX_H);
-    maskCtx.fillStyle = '#fff';
-    for (const tid of territoiresParRegion[region] || []) {
-      const geometry = canvasGeometryById.get(tid);
-      if (!geometry) continue;
-      maskCtx.beginPath();
-      path({ type: 'Feature', geometry });
-      maskCtx.fill();
-    }
-    const { data } = maskCtx.getImageData(0, 0, TEX_W, TEX_H);
-    const inside = (x, y) => data[(y * TEX_W + x) * 4 + 3] > ALPHA_THRESHOLD;
-    const [r, g, b] = regionRgb.get(region);
-
-    for (let y = 0; y < TEX_H; y++) {
-      for (let x = 0; x < TEX_W; x++) {
-        if (!inside(x, y)) continue;
-        const left = x > 0 && inside(x - 1, y);
-        const right = x < TEX_W - 1 && inside(x + 1, y);
-        const up = y > 0 && inside(x, y - 1);
-        const down = y < TEX_H - 1 && inside(x, y + 1);
-        if (left && right && up && down) continue; // pixel intérieur, pas une frontière
+  const stamp = (cx, cy, r, g, b) => {
+    const x0 = Math.max(0, cx - REGION_BORDER_RADIUS);
+    const x1 = Math.min(TEX_W - 1, cx + REGION_BORDER_RADIUS);
+    const y0 = Math.max(0, cy - REGION_BORDER_RADIUS);
+    const y1 = Math.min(TEX_H - 1, cy + REGION_BORDER_RADIUS);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
         const i = (y * TEX_W + x) * 4;
         out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = 255;
+      }
+    }
+  };
+
+  const ALPHA_THRESHOLD = 127;
+  const PAD = REGION_BORDER_RADIUS + 2;
+
+  for (const region of REGIONS) {
+    const ids = territoiresParRegion[region] || [];
+    const features = ids.map((tid) => ({ type: 'Feature', geometry: canvasGeometryById.get(tid) })).filter((f) => f.geometry);
+    if (!features.length) continue;
+    const [[bx0, by0], [bx1, by1]] = path.bounds({ type: 'FeatureCollection', features });
+    const x0 = Math.max(0, Math.floor(bx0) - PAD);
+    const y0 = Math.max(0, Math.floor(by0) - PAD);
+    const x1 = Math.min(TEX_W - 1, Math.ceil(bx1) + PAD);
+    const y1 = Math.min(TEX_H - 1, Math.ceil(by1) + PAD);
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    if (w <= 0 || h <= 0) continue;
+
+    maskCtx.clearRect(x0, y0, w, h);
+    maskCtx.fillStyle = '#fff';
+    for (const f of features) {
+      maskCtx.beginPath();
+      path(f);
+      maskCtx.fill();
+    }
+    const { data } = maskCtx.getImageData(x0, y0, w, h);
+    const inside = (lx, ly) => data[(ly * w + lx) * 4 + 3] > ALPHA_THRESHOLD;
+    const [r, g, b] = regionRgb.get(region);
+
+    for (let ly = 0; ly < h; ly++) {
+      for (let lx = 0; lx < w; lx++) {
+        if (!inside(lx, ly)) continue;
+        const left = lx > 0 && inside(lx - 1, ly);
+        const right = lx < w - 1 && inside(lx + 1, ly);
+        const up = ly > 0 && inside(lx, ly - 1);
+        const down = ly < h - 1 && inside(lx, ly + 1);
+        if (left && right && up && down) continue; // pixel intérieur, pas une frontière
+        stamp(x0 + lx, y0 + ly, r, g, b);
       }
     }
   }
@@ -214,8 +260,8 @@ function drawBaseCanvas() {
   // Frontières de tous les territoires, dessinées une seule fois : elles ne changent
   // jamais, seul le remplissage (attribué/sélectionné) est redessiné ensuite.
   path.context(baseCtx);
-  baseCtx.strokeStyle = 'rgba(255,255,255,0.35)';
-  baseCtx.lineWidth = 1;
+  baseCtx.strokeStyle = 'rgba(0,0,0,0.9)';
+  baseCtx.lineWidth = TEX_W * 0.0012;
   for (const geometry of canvasGeometryById.values()) {
     baseCtx.beginPath();
     path({ type: 'Feature', geometry });
@@ -418,8 +464,8 @@ legend.className = 'legend';
 legend.innerHTML = `
   <div><b>47 territoires</b> · 22 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
-  <div class="row"><span class="sq"></span> ville (carré, taille = slots)</div>
-  <div class="row"><span class="sq" style="transform:rotate(45deg)"></span> slot Industrie</div>
+  <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
+  <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
   <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
 `;
@@ -510,10 +556,12 @@ const world = new Globe(globeEl)
   .htmlLat((d) => d.lat)
   .htmlLng((d) => d.lon)
   .htmlAltitude(0.012)
-  .htmlElement(buildMarkerElement);
+  .htmlElement(buildMarkerElement)
+  .onZoom(updatePoiScale);
 
 world.pointOfView({ lat: 20, lng: 10, altitude: 2.6 }, 0);
 window.__world = world; // debug uniquement
+updatePoiScale(world.pointOfView());
 
 // Diagnostic : sur un appareil sous pression mémoire (tablette, beaucoup de géométrie),
 // le navigateur peut perdre le contexte WebGL — symptôme typique : tout le globe se met
@@ -531,18 +579,39 @@ glCanvas.addEventListener('webglcontextrestored', () => {
 
 let markersData = [];
 
+// Un marqueur = une ancre (position gérée par globe.gl/CSS2DRenderer, qui réécrit son style
+// "transform" à chaque frame — on n'y touche jamais) contenant un carré visuel séparé
+// (.poi-marker) : c'est SUR ce carré, jamais sur l'ancre, qu'on applique l'échelle liée au
+// zoom (voir updatePoiScale), sans quoi elle serait écrasée en permanence par globe.gl.
 function buildMarkerElement(d) {
-  const el = document.createElement('div');
+  const anchor = document.createElement('div');
+  anchor.className = 'poi-anchor';
+  const marker = document.createElement('div');
+  marker.className = 'poi-marker';
+  marker.style.borderColor = markerColorForTerritoire(d.territoireId);
+  marker.innerHTML = d.type === 'city' ? CITY_ICON_SVG : FACTORY_ICON_SVG;
+  anchor.appendChild(marker);
   if (d.type === 'city') {
-    el.className = `city-marker slots-${Math.min(d.slots, 3)}`;
-    el.style.background = markerColorForTerritoire(d.territoireId);
-    el.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
-    el.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
+    marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
+    marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
   } else {
-    el.className = 'factory-marker';
-    el.style.borderColor = markerColorForTerritoire(d.territoireId);
+    marker.classList.add('poi-marker--factory');
   }
-  return el;
+  return anchor;
+}
+
+// Les marqueurs ville/usine sont quasiment invisibles à l'échelle du globe entier, et
+// apparaissent en zoomant sur un pays — comme les noms de territoires, mais par un autre
+// moyen : ce sont des éléments HTML (CSS2DRenderer), pas des pixels de la texture, donc ils
+// ne grossissent pas tout seuls avec le zoom de la caméra. On calcule donc nous-mêmes une
+// échelle à partir de l'altitude de la caméra (0 = invisible, loin ; 1 = taille normale,
+// proche) à chaque changement de vue, appliquée via une variable CSS lue par .poi-marker.
+const POI_ALT_HIDDEN = 2.2;
+const POI_ALT_FULL = 0.45;
+function updatePoiScale({ altitude }) {
+  const t = (POI_ALT_HIDDEN - altitude) / (POI_ALT_HIDDEN - POI_ALT_FULL);
+  const scale = Math.max(0, Math.min(1, t));
+  document.documentElement.style.setProperty('--poi-scale', scale.toFixed(3));
 }
 
 // Appelée uniquement depuis le bouton "Envahir" (confirmation explicite).
