@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import Globe from 'globe.gl';
 import { geoEquirectangular, geoPath } from 'd3-geo';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
-import { union } from '@turf/union';
 import polylabel from 'polylabel';
 import './style.css';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
@@ -71,24 +70,32 @@ const rawGeometryById = new Map();
 // territoireId -> géométrie "dépliée" (utilisée pour le dessin sur le canvas).
 const canvasGeometryById = new Map();
 
-// Une couleur différente par région (22 au total) pour ses frontières — répartition
-// régulière sur la roue des teintes (HSL) pour que deux régions consécutives dans la
-// liste ne se ressemblent pas.
-const REGIONS = [...new Set(TERRITOIRES.map((t) => t.region))];
-const regionColor = new Map(REGIONS.map((r, i) => [r, `hsl(${Math.round((i * 360) / REGIONS.length)}, 80%, 55%)`]));
-// région -> géométrie fusionnée de tous ses territoires (juste le contour extérieur, plus
-// les frontières internes entre territoires d'une même région) — calculée une seule fois
-// à la réception des données, utilisée uniquement pour tracer les frontières de région.
-const regionGeometryById = new Map();
+function hslToRgb(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(255 * f(0)), Math.round(255 * f(8)), Math.round(255 * f(4))];
+}
 
-// territoireId -> { x, y, fontSize } en pixels du canvas, calculé une seule fois par
-// territoire (pas à chaque rendu) à partir de sa forme réelle. On utilise le "pôle
-// d'inaccessibilité" (polylabel, la même technique que Mapbox pour le placement des noms
-// de pays sur une carte) plutôt que le centre géométrique : contrairement au centre, ce
-// point est TOUJOURS à l'intérieur de la forme, y compris pour un territoire en croissant,
-// avec une baie, ou coupé en plusieurs îles (on ne garde alors que la plus grande). La
-// distance au bord le plus proche de ce point sert aussi à adapter la taille du texte : un
-// petit territoire reçoit une police plus petite, pour ne jamais déborder dessus.
+// Une couleur différente par région (22 au total) pour ses frontières. Les teintes sont
+// espacées par l'angle d'or (~137.5°) plutôt que régulièrement (360/22°) : deux régions
+// consécutives dans la liste (donc souvent voisines géographiquement, ex. les régions
+// d'Europe) reçoivent ainsi des teintes franchement différentes plutôt que deux nuances
+// proches d'une même couleur.
+const REGIONS = [...new Set(TERRITOIRES.map((t) => t.region))];
+const regionRgb = new Map(REGIONS.map((r, i) => [r, hslToRgb((i * 137.508) % 360, 80, 55)]));
+const regionColor = new Map(REGIONS.map((r) => [r, `rgb(${regionRgb.get(r).join(',')})`]));
+// Image (calculée une seule fois à la réception des données) portant uniquement les
+// frontières EXTÉRIEURES de chaque région, en couleur — voir computeRegionBorderOverlay.
+let regionBorderOverlay = null;
+
+// territoireId -> { x, y } en pixels du canvas, calculé une seule fois par territoire (pas
+// à chaque rendu) à partir de sa forme réelle. On utilise le "pôle d'inaccessibilité"
+// (polylabel, la même technique que Mapbox pour le placement des noms de pays sur une
+// carte) plutôt que le centre géométrique : contrairement au centre, ce point est TOUJOURS
+// à l'intérieur de la forme, y compris pour un territoire en croissant, avec une baie, ou
+// coupé en plusieurs îles (on ne garde alors que la plus grande).
 const labelAnchorById = new Map();
 function computeLabelAnchor(geometry) {
   const pieces = geometry.type === 'MultiPolygon' ? geometry.coordinates : [geometry.coordinates];
@@ -100,26 +107,30 @@ function computeLabelAnchor(geometry) {
   }
   if (!best) return null;
   const label = polylabel([best.rings[0]], 0.5);
-  const fontSize = Math.max(7, Math.min(15, label.distance * 1.15));
-  return { x: label[0], y: label[1], fontSize };
+  return { x: label[0], y: label[1] };
 }
 
+// Même taille de police, minuscule, pour tous les territoires (dans l'espace de la texture,
+// qui couvre toute la Terre en 1600x800 px) : à l'échelle du globe entier le nom est presque
+// invisible, volontairement discret ; en zoomant sur un pays ou une région, la même caméra
+// qui grossit la carte grossit aussi ce texte, qui devient lisible sans rien recalculer.
+const LABEL_FONT_SIZE = 7;
+
 // Dessine le nom de chaque territoire, toujours à la même place (calculée une seule fois,
-// voir computeLabelAnchor), avec une taille de police adaptée à la place disponible. Un
-// contour sombre derrière le texte blanc le garde lisible quel que soit le fond (océan,
-// désert, couleur de joueur une fois le territoire attribué...).
+// voir computeLabelAnchor). Un contour sombre derrière le texte blanc le garde lisible quel
+// que soit le fond (océan, désert, couleur de joueur une fois le territoire attribué...).
 function drawLabels(ctx) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
+  ctx.font = `${LABEL_FONT_SIZE}px system-ui, sans-serif`;
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillStyle = '#ffffff';
   for (const t of TERRITOIRES) {
     const a = labelAnchorById.get(t.id);
     if (!a) continue;
-    ctx.font = `${a.fontSize.toFixed(1)}px system-ui, sans-serif`;
-    ctx.lineWidth = Math.max(1.5, a.fontSize * 0.22);
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
     ctx.strokeText(t.nom, a.x, a.y);
-    ctx.fillStyle = '#ffffff';
     ctx.fillText(t.nom, a.x, a.y);
   }
 }
@@ -130,6 +141,68 @@ let baseCtx = null;
 let liveCanvas = null;
 let liveCtx = null;
 let globeTexture = null;
+
+// Calcule une image (même résolution que la texture) qui ne contient que les frontières
+// EXTÉRIEURES des régions, chacune dans sa propre couleur — jamais les frontières internes
+// entre deux territoires d'une même région. Approche par pixels plutôt que par fusion
+// géométrique (@turf/union), pour être fiable même quand deux territoires voisins ne
+// partagent pas des sommets parfaitement identiques dans les données sources.
+//
+// Régions traitées une par une (pas toutes dans le même canvas) : pour une région donnée,
+// tous ses territoires sont peints dans le MÊME blanc opaque sur un canvas à part, ce qui
+// rend sa frontière interne invisible (blanc sur blanc, pas d'ambiguïté de couleur, même
+// avec l'anti-aliasing du canvas). Un pixel plein (canal alpha > seuil) dont au moins un des
+// 4 voisins est vide est alors un pixel de frontière EXTÉRIEURE de cette région, peint dans
+// sa couleur sur l'image de sortie. Traiter les régions séparément (plutôt qu'un seul canvas
+// partagé avec un identifiant par région) évite tout risque qu'un pixel à la frontière entre
+// deux régions DIFFÉRENTES se retrouve, à cause du fondu de l'anti-aliasing, avec une valeur
+// intermédiaire qui ressemblerait par hasard à l'identifiant d'une troisième région.
+function computeRegionBorderOverlay() {
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = TEX_W;
+  maskCanvas.height = TEX_H;
+  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+  path.context(maskCtx);
+
+  const overlay = document.createElement('canvas');
+  overlay.width = TEX_W;
+  overlay.height = TEX_H;
+  const overlayCtx = overlay.getContext('2d');
+  const overlayData = overlayCtx.createImageData(TEX_W, TEX_H);
+  const out = overlayData.data;
+
+  const ALPHA_THRESHOLD = 127;
+
+  for (const region of REGIONS) {
+    maskCtx.clearRect(0, 0, TEX_W, TEX_H);
+    maskCtx.fillStyle = '#fff';
+    for (const tid of territoiresParRegion[region] || []) {
+      const geometry = canvasGeometryById.get(tid);
+      if (!geometry) continue;
+      maskCtx.beginPath();
+      path({ type: 'Feature', geometry });
+      maskCtx.fill();
+    }
+    const { data } = maskCtx.getImageData(0, 0, TEX_W, TEX_H);
+    const inside = (x, y) => data[(y * TEX_W + x) * 4 + 3] > ALPHA_THRESHOLD;
+    const [r, g, b] = regionRgb.get(region);
+
+    for (let y = 0; y < TEX_H; y++) {
+      for (let x = 0; x < TEX_W; x++) {
+        if (!inside(x, y)) continue;
+        const left = x > 0 && inside(x - 1, y);
+        const right = x < TEX_W - 1 && inside(x + 1, y);
+        const up = y > 0 && inside(x, y - 1);
+        const down = y < TEX_H - 1 && inside(x, y + 1);
+        if (left && right && up && down) continue; // pixel intérieur, pas une frontière
+        const i = (y * TEX_W + x) * 4;
+        out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = 255;
+      }
+    }
+  }
+  overlayCtx.putImageData(overlayData, 0, 0);
+  return overlay;
+}
 
 function drawBaseCanvas() {
   baseCanvas = document.createElement('canvas');
@@ -149,16 +222,10 @@ function drawBaseCanvas() {
     baseCtx.stroke();
   }
 
-  // Frontières des régions, en couleur (une par région), tracées par-dessus les
-  // frontières de territoire — plus épaisses, pour bien les distinguer et repérer les
-  // zones que chaque région occupe.
-  baseCtx.lineWidth = 2.5;
-  for (const [region, geometry] of regionGeometryById) {
-    baseCtx.strokeStyle = regionColor.get(region);
-    baseCtx.beginPath();
-    path({ type: 'Feature', geometry });
-    baseCtx.stroke();
-  }
+  // Frontières extérieures des régions, en couleur (une par région), tracées par-dessus
+  // les frontières de territoire — jamais les frontières internes entre deux territoires
+  // d'une même région (voir computeRegionBorderOverlay).
+  if (regionBorderOverlay) baseCtx.drawImage(regionBorderOverlay, 0, 0);
 
   liveCanvas = document.createElement('canvas');
   liveCanvas.width = TEX_W;
@@ -335,6 +402,16 @@ resetBtn.onclick = () => {
   renderAll();
 };
 topbar.appendChild(resetBtn);
+
+// Bandeau pleine largeur listant les 22 régions et leur couleur de frontière (voir
+// computeRegionBorderOverlay), pour pouvoir associer chaque couleur vue sur le globe à son
+// nom de région.
+const regionLegendBar = document.createElement('div');
+regionLegendBar.className = 'region-legend';
+regionLegendBar.innerHTML = REGIONS.map((region) => `
+  <span class="item"><span class="sq" style="background:${regionColor.get(region)}"></span>${region}</span>
+`).join('');
+app.appendChild(regionLegendBar);
 
 const legend = document.createElement('div');
 legend.className = 'legend';
@@ -564,21 +641,7 @@ function loadGameData(attempt = 1) {
       const anchor = computeLabelAnchor(canvasGeometryById.get(t.id));
       if (anchor) labelAnchorById.set(t.id, anchor);
     }
-    for (const region of REGIONS) {
-      const ids = TERRITOIRES.filter((t) => t.region === region).map((t) => t.id);
-      const features = ids.map((id) => ({ type: 'Feature', properties: {}, geometry: canvasGeometryById.get(id) }));
-      let merged = features[0]?.geometry;
-      if (features.length > 1) {
-        try {
-          merged = union({ type: 'FeatureCollection', features }).geometry;
-        } catch {
-          // Fusion impossible (topologie invalide) : on trace chaque territoire de la
-          // région séparément plus bas, à défaut d'un contour extérieur unique.
-          merged = { type: 'MultiPolygon', coordinates: features.flatMap((f) => (f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates)) };
-        }
-      }
-      if (merged) regionGeometryById.set(region, merged);
-    }
+    regionBorderOverlay = computeRegionBorderOverlay();
     drawBaseCanvas();
     redrawLive();
     const mat = world.globeMaterial();

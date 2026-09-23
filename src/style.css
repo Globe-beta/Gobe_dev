@@ -73,6 +73,27 @@ html, body {
 }
 .btn:active { transform: scale(0.96); }
 
+.region-legend {
+  position: fixed;
+  top: 90px;
+  left: 8px;
+  right: 8px;
+  z-index: 9997;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.region-legend .item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.region-legend .sq { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+
 .legend {
   position: absolute;
   bottom: max(12px, env(safe-area-inset-bottom));
