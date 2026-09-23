@@ -705,25 +705,26 @@ function buildMarkerElement(d) {
   return anchor;
 }
 
-// Les marqueurs ville/usine sont quasiment invisibles à l'échelle du globe entier, et
-// apparaissent en zoomant sur un pays — comme les noms de territoires, mais par un autre
-// moyen : ce sont des éléments HTML (CSS2DRenderer), pas des pixels de la texture, donc ils
-// ne grossissent pas tout seuls avec le zoom de la caméra. On calcule donc nous-mêmes une
-// échelle à partir de l'altitude de la caméra, appliquée via une variable CSS lue par
-// .poi-marker, en deux temps : d'abord une apparition (0 → 1, invisible → taille normale, de
-// POI_ALT_HIDDEN à POI_ALT_FULL), puis, en continuant de zoomer, un grossissement continu
-// (1 → POI_MAX_SCALE, de POI_ALT_FULL à POI_ALT_CLOSE) — sans ce deuxième temps, les
-// marqueurs restent minuscules même zoomé bien à l'intérieur d'un petit territoire.
+// Les marqueurs ville/usine sont visibles dès la vue du globe entier (échelle MIN_SCALE), et
+// grossissent progressivement en zoomant sur un pays — comme les noms de territoires, mais
+// par un autre moyen : ce sont des éléments HTML (CSS2DRenderer), pas des pixels de la
+// texture, donc ils ne grossissent pas tout seuls avec le zoom de la caméra. On calcule donc
+// nous-mêmes une échelle à partir de l'altitude de la caméra, appliquée via une variable CSS
+// lue par .poi-marker : MIN_SCALE (déjà bien visible) tant qu'on n'a pas commencé à zoomer
+// (POI_ALT_HIDDEN), 1 (taille normale) à POI_ALT_FULL, puis un grossissement continu jusqu'à
+// POI_MAX_SCALE en continuant de zoomer (jusqu'à POI_ALT_CLOSE).
 const POI_ALT_HIDDEN = 2.2;
 const POI_ALT_FULL = 0.45;
 const POI_ALT_CLOSE = 0.12;
+const POI_MIN_SCALE = 0.6;
 const POI_MAX_SCALE = 4;
 function updatePoiScale({ altitude }) {
   let scale;
   if (altitude >= POI_ALT_HIDDEN) {
-    scale = 0;
+    scale = POI_MIN_SCALE;
   } else if (altitude >= POI_ALT_FULL) {
-    scale = (POI_ALT_HIDDEN - altitude) / (POI_ALT_HIDDEN - POI_ALT_FULL);
+    const t = (POI_ALT_HIDDEN - altitude) / (POI_ALT_HIDDEN - POI_ALT_FULL);
+    scale = POI_MIN_SCALE + t * (1 - POI_MIN_SCALE);
   } else {
     const t = Math.min(1, (POI_ALT_FULL - altitude) / (POI_ALT_FULL - POI_ALT_CLOSE));
     scale = 1 + t * (POI_MAX_SCALE - 1);
