@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import Globe from 'globe.gl';
 import { geoEquirectangular, geoPath } from 'd3-geo';
+import { Delaunay } from 'd3-delaunay';
+import { union as polyUnion, intersection as polyIntersection } from 'polyclip-ts';
+import simplify from '@turf/simplify';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import polylabel from 'polylabel';
 import './style.css';
@@ -74,12 +77,108 @@ function dewrapGeometry(geometry) {
   return geometry;
 }
 
-// territoireId -> géométrie telle que livrée par build-geo.mjs (utilisée pour la
-// détection de clic : point-in-polygon, insensible au dépliage antiméridien tant que le
-// point testé est décalé de la même façon si besoin — voir findTerritoireAt).
-const rawGeometryById = new Map();
-// territoireId -> géométrie "dépliée" (utilisée pour le dessin sur le canvas).
+// territoireId -> géométrie "dépliée" (lon/lat), point de départ commun pour tout le reste :
+// voir projectToPixelMultiPoly et computeDisplayGeometry.
 const canvasGeometryById = new Map();
+
+// Convertit une géométrie lon/lat en coordonnées PIXEL de la texture (même repère que tout
+// ce qui est dessiné sur le canvas), sous la forme attendue par polyclip-ts : un MultiPoly =
+// tableau de Poly, chaque Poly = un anneau unique [ring] (pas de trous). On n'utilise PAS une
+// simple projection point par point : d3-geo (via path.context) découpe lui-même proprement
+// un contour qui traverse l'antiméridien (Extrême-Orient russe, Pacifique) en plusieurs
+// morceaux — une projection naïve donnerait un unique anneau qui traverse toute la largeur
+// de la texture au lieu de deux morceaux bien séparés. On récupère ce découpage "gratuitement"
+// en donnant à path() un faux contexte canvas qui enregistre les points au lieu de dessiner.
+function projectToPixelMultiPoly(geometry) {
+  const rings = [];
+  let current = null;
+  const recorder = {
+    moveTo(x, y) { current = [[x, y]]; rings.push(current); },
+    lineTo(x, y) { current.push([x, y]); },
+    closePath() {
+      if (current && current.length && (current[0][0] !== current[current.length - 1][0] || current[0][1] !== current[current.length - 1][1])) {
+        current.push(current[0]);
+      }
+    },
+    beginPath() {},
+  };
+  path.context(recorder);
+  path({ type: 'Feature', geometry });
+  path.context(null);
+  return rings.filter((r) => r.length >= 4).map((r) => [r]);
+}
+
+// Dessine un MultiPoly pixel (voir ci-dessus) directement sur un contexte canvas, sans
+// projection (déjà en coordonnées pixel) — remplace path()+geometry lon/lat pour tout ce qui
+// utilise displayGeometryById.
+function drawPixelPath(ctx, multiPoly) {
+  for (const poly of multiPoly) {
+    const ring = poly[0];
+    ctx.moveTo(ring[0][0], ring[0][1]);
+    for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1]);
+    ctx.closePath();
+  }
+}
+
+// territoireId -> forme affichée sur la carte (MultiPoly en coordonnées pixel), utilisée pour
+// le dessin, la détection de clic ET le placement des noms — voir computeDisplayGeometry.
+const displayGeometryById = new Map();
+
+// Simplifie un MultiPoly pixel (réduit son nombre de points, en gardant sa forme visuelle)
+// avant de le passer à polyclip-ts : les données géographiques ont des côtes bien plus
+// détaillées que nécessaire à l'écran (parfois des dizaines de milliers de points pour un
+// seul territoire, ex. les côtes russes ou canadiennes), et polyclip-ts (union/intersection)
+// ralentit fortement avec le nombre de points. Une tolérance de 1.5px de texture (sur une
+// image de 4096px de large) est imperceptible visuellement mais réduit le calcul d'un ordre
+// de grandeur.
+function simplifyPixelMultiPoly(multiPoly, tolerance = 1.5) {
+  const feature = { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: multiPoly } };
+  return simplify(feature, { tolerance, highQuality: false, mutate: false }).geometry.coordinates;
+}
+
+// Pour une région à plusieurs territoires, remplace le tracé RÉEL (sinueux, suit les vraies
+// frontières/côtes) entre ses territoires par un partage géométrique de type Voronoï : des
+// droites (médiatrices entre les positions des territoires), donc des formes bien plus
+// "lisibles" qu'un vrai tracé politique — tout en gardant EXACTEMENT le contour extérieur
+// réel de la région (chaque cellule de Voronoï est découpée pour ne jamais déborder de
+// l'union réelle des territoires de la région). Pour une région à un seul territoire, rien à
+// partager : sa forme réelle, projetée, est gardée telle quelle.
+function computeDisplayGeometry() {
+  for (const region of REGIONS) {
+    const ids = territoiresParRegion[region] || [];
+    if (!ids.length) continue;
+    const pixelMPs = new Map(ids.map((id) => [id, simplifyPixelMultiPoly(projectToPixelMultiPoly(canvasGeometryById.get(id)))]));
+
+    if (ids.length === 1) {
+      displayGeometryById.set(ids[0], pixelMPs.get(ids[0]));
+      continue;
+    }
+
+    const regionOuter = polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
+
+    const sites = ids.map((id) => anchorOfPixelMultiPoly(pixelMPs.get(id)));
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (const poly of regionOuter) {
+      for (const [x, y] of poly[0]) {
+        bx0 = Math.min(bx0, x); by0 = Math.min(by0, y);
+        bx1 = Math.max(bx1, x); by1 = Math.max(by1, y);
+      }
+    }
+    // Bornes du diagramme de Voronoï largement plus grandes que la région elle-même : sinon
+    // les cellules seraient tronquées par les bornes avant même d'être découpées par le vrai
+    // contour de la région, ce qui déplacerait les médiatrices calculées.
+    const padX = Math.max(50, (bx1 - bx0) * 0.5);
+    const padY = Math.max(50, (by1 - by0) * 0.5);
+    const voronoi = Delaunay.from(sites.map((s) => [s.x, s.y])).voronoi([bx0 - padX, by0 - padY, bx1 + padX, by1 + padY]);
+
+    for (let i = 0; i < ids.length; i++) {
+      const cell = voronoi.cellPolygon(i);
+      if (!cell) continue;
+      const clipped = polyIntersection([cell], regionOuter);
+      if (clipped.length) displayGeometryById.set(ids[i], clipped);
+    }
+  }
+}
 
 function hslToRgb(h, s, l) {
   s /= 100; l /= 100;
@@ -101,25 +200,32 @@ const regionColor = new Map(REGIONS.map((r) => [r, `rgb(${regionRgb.get(r).join(
 // frontières EXTÉRIEURES de chaque région, en couleur — voir computeRegionBorderOverlay.
 let regionBorderOverlay = null;
 
-// territoireId -> { x, y } en pixels du canvas, calculé une seule fois par territoire (pas
-// à chaque rendu) à partir de sa forme réelle. On utilise le "pôle d'inaccessibilité"
-// (polylabel, la même technique que Mapbox pour le placement des noms de pays sur une
-// carte) plutôt que le centre géométrique : contrairement au centre, ce point est TOUJOURS
-// à l'intérieur de la forme, y compris pour un territoire en croissant, avec une baie, ou
-// coupé en plusieurs îles (on ne garde alors que la plus grande).
-const labelAnchorById = new Map();
-function computeLabelAnchor(geometry) {
-  const pieces = geometry.type === 'MultiPolygon' ? geometry.coordinates : [geometry.coordinates];
+// { x, y } en pixels du canvas pour un MultiPoly pixel (voir projectToPixelMultiPoly) —
+// utilisé à la fois comme site du diagramme de Voronoï (computeDisplayGeometry) et comme
+// position d'ancrage des noms de territoires (labelAnchorById). On utilise le "pôle
+// d'inaccessibilité" (polylabel, la même technique que Mapbox pour le placement des noms de
+// pays sur une carte) plutôt que le centre géométrique : contrairement au centre, ce point
+// est TOUJOURS à l'intérieur de la forme, y compris pour une forme en croissant, avec une
+// baie, ou coupée en plusieurs îles (on ne garde alors que la plus grande).
+function anchorOfPixelMultiPoly(multiPoly) {
+  if (!multiPoly) return null;
   let best = null;
-  for (const rings of pieces) {
-    const pixelRings = rings.map((ring) => ring.map((pt) => projection(pt)));
-    const area = Math.abs(path.area({ type: 'Polygon', coordinates: rings }));
-    if (!best || area > best.area) best = { rings: pixelRings, area };
+  for (const poly of multiPoly) {
+    const ring = poly[0];
+    let a = 0;
+    for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+    const area = Math.abs(a) / 2;
+    if (!best || area > best.area) best = { ring, area };
   }
   if (!best) return null;
-  const label = polylabel([best.rings[0]], 0.5);
+  const label = polylabel([best.ring], 0.5);
   return { x: label[0], y: label[1] };
 }
+
+// territoireId -> { x, y } en pixels du canvas, calculé une seule fois par territoire (pas à
+// chaque rendu), à partir de sa forme AFFICHÉE (displayGeometryById) — donc toujours à
+// l'intérieur de la forme géométrique simplifiée qu'on dessine, pas de l'ancienne forme réelle.
+const labelAnchorById = new Map();
 
 // Même taille de police, minuscule, pour tous les territoires (dans l'espace de la texture,
 // qui couvre toute la Terre en TEX_W x TEX_H px) : à l'échelle du globe entier le nom est
@@ -132,8 +238,9 @@ function computeLabelAnchor(geometry) {
 const LABEL_FONT_SIZE = Math.round(TEX_W * 0.0022);
 
 // Dessine le nom de chaque territoire, toujours à la même place (calculée une seule fois,
-// voir computeLabelAnchor). Un contour sombre derrière le texte blanc le garde lisible quel
-// que soit le fond (océan, désert, couleur de joueur une fois le territoire attribué...).
+// voir labelAnchorById/anchorOfPixelMultiPoly). Un contour sombre derrière le texte blanc le
+// garde lisible quel que soit le fond (océan, désert, couleur de joueur une fois le
+// territoire attribué...).
 function drawLabels(ctx) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -190,7 +297,6 @@ function computeRegionBorderOverlay() {
   maskCanvas.width = TEX_W;
   maskCanvas.height = TEX_H;
   const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
-  path.context(maskCtx);
 
   const overlay = document.createElement('canvas');
   overlay.width = TEX_W;
@@ -204,9 +310,17 @@ function computeRegionBorderOverlay() {
 
   for (const region of REGIONS) {
     const ids = territoiresParRegion[region] || [];
-    const features = ids.map((tid) => ({ type: 'Feature', geometry: canvasGeometryById.get(tid) })).filter((f) => f.geometry);
-    if (!features.length) continue;
-    const [[bx0, by0], [bx1, by1]] = path.bounds({ type: 'FeatureCollection', features });
+    const shapes = ids.map((tid) => displayGeometryById.get(tid)).filter(Boolean);
+    if (!shapes.length) continue;
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (const mp of shapes) {
+      for (const poly of mp) {
+        for (const [x, y] of poly[0]) {
+          bx0 = Math.min(bx0, x); by0 = Math.min(by0, y);
+          bx1 = Math.max(bx1, x); by1 = Math.max(by1, y);
+        }
+      }
+    }
     const x0 = Math.max(0, Math.floor(bx0) - PAD);
     const y0 = Math.max(0, Math.floor(by0) - PAD);
     const x1 = Math.min(TEX_W - 1, Math.ceil(bx1) + PAD);
@@ -217,9 +331,9 @@ function computeRegionBorderOverlay() {
 
     maskCtx.clearRect(x0, y0, w, h);
     maskCtx.fillStyle = '#fff';
-    for (const f of features) {
+    for (const mp of shapes) {
       maskCtx.beginPath();
-      path(f);
+      drawPixelPath(maskCtx, mp);
       maskCtx.fill();
     }
     const { data } = maskCtx.getImageData(x0, y0, w, h);
@@ -258,12 +372,11 @@ function drawBaseCanvas() {
 
   // Frontières de tous les territoires, dessinées une seule fois : elles ne changent
   // jamais, seul le remplissage (attribué/sélectionné) est redessiné ensuite.
-  path.context(baseCtx);
   baseCtx.strokeStyle = 'rgba(0,0,0,0.9)';
   baseCtx.lineWidth = TEX_W * 0.0006;
-  for (const geometry of canvasGeometryById.values()) {
+  for (const mp of displayGeometryById.values()) {
     baseCtx.beginPath();
-    path({ type: 'Feature', geometry });
+    drawPixelPath(baseCtx, mp);
     baseCtx.stroke();
   }
 
@@ -284,14 +397,13 @@ function drawBaseCanvas() {
 // initial (redrawLive(null) implicite au chargement), on copie juste la base telle quelle.
 function redrawLive() {
   liveCtx.drawImage(baseCanvas, 0, 0);
-  path.context(liveCtx);
 
   const paint = (id, fillStyle) => {
-    const geometry = canvasGeometryById.get(id);
-    if (!geometry) return;
+    const mp = displayGeometryById.get(id);
+    if (!mp) return;
     liveCtx.fillStyle = fillStyle;
     liveCtx.beginPath();
-    path({ type: 'Feature', geometry });
+    drawPixelPath(liveCtx, mp);
     liveCtx.fill();
   };
 
@@ -305,20 +417,14 @@ function redrawLive() {
   globeTexture.needsUpdate = true;
 }
 
-// Cherche quel territoire contient le point (lat, lng) touché sur le globe. Comme pour le
-// dessin, certains territoires ont des longitudes décalées au-delà de ±180° dans les
-// données ; on teste donc le point à sa position normale ET décalée de ±360°, l'une des
-// deux correspondra forcément à la représentation stockée pour ce territoire.
+// Cherche quel territoire contient le point (lat, lng) touché sur le globe. On projette le
+// point une seule fois en pixels puis on le teste contre les mêmes formes AFFICHÉES
+// (displayGeometryById) que celles dessinées — ainsi, on ne peut jamais toucher une zone qui
+// a l'air d'appartenir à un territoire à l'écran mais que le clic ne reconnaît pas.
 function findTerritoireAt(lat, lng) {
-  for (const [id, geometry] of rawGeometryById) {
-    const feature = { type: 'Feature', geometry };
-    if (
-      booleanPointInPolygon([lng, lat], feature) ||
-      booleanPointInPolygon([lng + 360, lat], feature) ||
-      booleanPointInPolygon([lng - 360, lat], feature)
-    ) {
-      return id;
-    }
+  const [x, y] = projection([lng, lat]);
+  for (const [id, mp] of displayGeometryById) {
+    if (booleanPointInPolygon([x, y], { type: 'MultiPolygon', coordinates: mp })) return id;
   }
   return null;
 }
@@ -702,11 +808,11 @@ function loadGameData(attempt = 1) {
 
     for (const f of geo.features) {
       const id = f.properties.territoireId;
-      rawGeometryById.set(id, f.geometry);
       canvasGeometryById.set(id, dewrapGeometry(f.geometry));
     }
+    computeDisplayGeometry();
     for (const t of TERRITOIRES) {
-      const anchor = computeLabelAnchor(canvasGeometryById.get(t.id));
+      const anchor = anchorOfPixelMultiPoly(displayGeometryById.get(t.id));
       if (anchor) labelAnchorById.set(t.id, anchor);
     }
     regionBorderOverlay = computeRegionBorderOverlay();
