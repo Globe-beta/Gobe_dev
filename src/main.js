@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import Globe from 'globe.gl';
 import { geoEquirectangular, geoPath } from 'd3-geo';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
+import { union } from '@turf/union';
+import polylabel from 'polylabel';
 import './style.css';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
 
@@ -68,44 +70,57 @@ function dewrapGeometry(geometry) {
 const rawGeometryById = new Map();
 // territoireId -> géométrie "dépliée" (utilisée pour le dessin sur le canvas).
 const canvasGeometryById = new Map();
-// territoireId -> [lon, lat] (centre approximatif, pour placer nom + repère de région).
-let centroidesById = {};
 
-// Un point de couleur différent par région (22 au total), pour repérer d'un coup d'œil
-// quels territoires appartiennent à la même région — purement esthétique, sans lien avec
-// l'attribution aux joueurs. Répartition régulière sur la roue des teintes (HSL) pour que
-// deux régions consécutives dans la liste ne se ressemblent pas.
+// Une couleur différente par région (22 au total) pour ses frontières — répartition
+// régulière sur la roue des teintes (HSL) pour que deux régions consécutives dans la
+// liste ne se ressemblent pas.
 const REGIONS = [...new Set(TERRITOIRES.map((t) => t.region))];
-const regionColor = new Map(REGIONS.map((r, i) => [r, `hsl(${Math.round((i * 360) / REGIONS.length)}, 75%, 55%)`]));
+const regionColor = new Map(REGIONS.map((r, i) => [r, `hsl(${Math.round((i * 360) / REGIONS.length)}, 80%, 55%)`]));
+// région -> géométrie fusionnée de tous ses territoires (juste le contour extérieur, plus
+// les frontières internes entre territoires d'une même région) — calculée une seule fois
+// à la réception des données, utilisée uniquement pour tracer les frontières de région.
+const regionGeometryById = new Map();
 
-// Dessine, par-dessus tout le reste (y compris la couleur d'un joueur une fois le
-// territoire attribué) : un petit point coloré par région, et le nom du territoire —
-// même police et même taille pour tous, comme demandé. Un contour sombre derrière le
-// texte blanc le garde lisible quel que soit le fond (océan, désert, couleur de joueur...).
+// territoireId -> { x, y, fontSize } en pixels du canvas, calculé une seule fois par
+// territoire (pas à chaque rendu) à partir de sa forme réelle. On utilise le "pôle
+// d'inaccessibilité" (polylabel, la même technique que Mapbox pour le placement des noms
+// de pays sur une carte) plutôt que le centre géométrique : contrairement au centre, ce
+// point est TOUJOURS à l'intérieur de la forme, y compris pour un territoire en croissant,
+// avec une baie, ou coupé en plusieurs îles (on ne garde alors que la plus grande). La
+// distance au bord le plus proche de ce point sert aussi à adapter la taille du texte : un
+// petit territoire reçoit une police plus petite, pour ne jamais déborder dessus.
+const labelAnchorById = new Map();
+function computeLabelAnchor(geometry) {
+  const pieces = geometry.type === 'MultiPolygon' ? geometry.coordinates : [geometry.coordinates];
+  let best = null;
+  for (const rings of pieces) {
+    const pixelRings = rings.map((ring) => ring.map((pt) => projection(pt)));
+    const area = Math.abs(path.area({ type: 'Polygon', coordinates: rings }));
+    if (!best || area > best.area) best = { rings: pixelRings, area };
+  }
+  if (!best) return null;
+  const label = polylabel([best.rings[0]], 0.5);
+  const fontSize = Math.max(7, Math.min(15, label.distance * 1.15));
+  return { x: label[0], y: label[1], fontSize };
+}
+
+// Dessine le nom de chaque territoire, toujours à la même place (calculée une seule fois,
+// voir computeLabelAnchor), avec une taille de police adaptée à la place disponible. Un
+// contour sombre derrière le texte blanc le garde lisible quel que soit le fond (océan,
+// désert, couleur de joueur une fois le territoire attribué...).
 function drawLabels(ctx) {
-  ctx.font = '11px system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   for (const t of TERRITOIRES) {
-    const c = centroidesById[t.id];
-    if (!c) continue;
-    const [x, y] = projection(c);
-    if (x == null || y == null) continue;
-
-    ctx.beginPath();
-    ctx.arc(x, y - 8, 3.5, 0, Math.PI * 2);
-    ctx.fillStyle = regionColor.get(t.region);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
+    const a = labelAnchorById.get(t.id);
+    if (!a) continue;
+    ctx.font = `${a.fontSize.toFixed(1)}px system-ui, sans-serif`;
+    ctx.lineWidth = Math.max(1.5, a.fontSize * 0.22);
     ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-    ctx.lineWidth = 2.5;
-    ctx.strokeText(t.nom, x, y + 5);
+    ctx.strokeText(t.nom, a.x, a.y);
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(t.nom, x, y + 5);
+    ctx.fillText(t.nom, a.x, a.y);
   }
 }
 
@@ -129,6 +144,17 @@ function drawBaseCanvas() {
   baseCtx.strokeStyle = 'rgba(255,255,255,0.35)';
   baseCtx.lineWidth = 1;
   for (const geometry of canvasGeometryById.values()) {
+    baseCtx.beginPath();
+    path({ type: 'Feature', geometry });
+    baseCtx.stroke();
+  }
+
+  // Frontières des régions, en couleur (une par région), tracées par-dessus les
+  // frontières de territoire — plus épaisses, pour bien les distinguer et repérer les
+  // zones que chaque région occupe.
+  baseCtx.lineWidth = 2.5;
+  for (const [region, geometry] of regionGeometryById) {
+    baseCtx.strokeStyle = regionColor.get(region);
     baseCtx.beginPath();
     path({ type: 'Feature', geometry });
     baseCtx.stroke();
@@ -534,7 +560,25 @@ function loadGameData(attempt = 1) {
       rawGeometryById.set(id, f.geometry);
       canvasGeometryById.set(id, dewrapGeometry(f.geometry));
     }
-    centroidesById = centroides;
+    for (const t of TERRITOIRES) {
+      const anchor = computeLabelAnchor(canvasGeometryById.get(t.id));
+      if (anchor) labelAnchorById.set(t.id, anchor);
+    }
+    for (const region of REGIONS) {
+      const ids = TERRITOIRES.filter((t) => t.region === region).map((t) => t.id);
+      const features = ids.map((id) => ({ type: 'Feature', properties: {}, geometry: canvasGeometryById.get(id) }));
+      let merged = features[0]?.geometry;
+      if (features.length > 1) {
+        try {
+          merged = union({ type: 'FeatureCollection', features }).geometry;
+        } catch {
+          // Fusion impossible (topologie invalide) : on trace chaque territoire de la
+          // région séparément plus bas, à défaut d'un contour extérieur unique.
+          merged = { type: 'MultiPolygon', coordinates: features.flatMap((f) => (f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates)) };
+        }
+      }
+      if (merged) regionGeometryById.set(region, merged);
+    }
     drawBaseCanvas();
     redrawLive();
     const mat = world.globeMaterial();
