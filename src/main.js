@@ -159,7 +159,7 @@ let globeTexture = null;
 
 // Épaisseur des frontières de région dans l'image de sortie (rayon, en px de texture, du
 // carré peint autour de chaque pixel de frontière détecté — voir plus bas).
-const REGION_BORDER_RADIUS = Math.round(TEX_W * 0.0018);
+const REGION_BORDER_RADIUS = Math.round(TEX_W * 0.001);
 
 // Calcule une image (même résolution que la texture) qui ne contient que les frontières
 // EXTÉRIEURES des régions, chacune dans sa propre couleur — jamais les frontières internes
@@ -173,14 +173,18 @@ const REGION_BORDER_RADIUS = Math.round(TEX_W * 0.0018);
 // avec l'anti-aliasing du canvas). Un pixel plein (canal alpha > seuil) dont au moins un des
 // 4 voisins est vide est alors un pixel de frontière EXTÉRIEURE de cette région ; on peint un
 // petit carré (REGION_BORDER_RADIUS) autour de lui dans l'image de sortie, pour obtenir un
-// trait plus épais qu'un simple contour de 1px. Traiter les régions séparément (plutôt qu'un
-// seul canvas partagé avec un identifiant par région) évite tout risque qu'un pixel à la
-// frontière entre deux régions DIFFÉRENTES se retrouve, à cause du fondu de l'anti-aliasing,
-// avec une valeur intermédiaire qui ressemblerait par hasard à l'identifiant d'une troisième
-// région. Le travail par région est limité à son rectangle englobant (pas le canvas entier) :
-// une région n'occupe généralement qu'une petite fraction de la carte, et à la résolution de
-// texture actuelle (4096x2048), parcourir les 22 régions sur l'image entière serait bien
-// trop lent.
+// trait plus épais qu'un simple contour de 1px — mais ce carré est peint UNIQUEMENT sur les
+// pixels qui appartiennent encore à cette région (jamais au-delà de sa propre frontière) :
+// quand deux régions différentes sont mitoyennes, chacune peint donc son propre trait sur
+// son propre côté de la limite, sans jamais effacer le trait de l'autre — les deux couleurs
+// restent visibles côte à côte plutôt que l'une écrasant l'autre. Traiter les régions
+// séparément (plutôt qu'un seul canvas partagé avec un identifiant par région) évite aussi
+// tout risque qu'un pixel à la frontière entre deux régions DIFFÉRENTES se retrouve, à cause
+// du fondu de l'anti-aliasing, avec une valeur intermédiaire qui ressemblerait par hasard à
+// l'identifiant d'une troisième région. Le travail par région est limité à son rectangle
+// englobant (pas le canvas entier) : une région n'occupe généralement qu'une petite fraction
+// de la carte, et à la résolution de texture actuelle (4096x2048), parcourir les 22 régions
+// sur l'image entière serait bien trop lent.
 function computeRegionBorderOverlay() {
   const maskCanvas = document.createElement('canvas');
   maskCanvas.width = TEX_W;
@@ -194,18 +198,6 @@ function computeRegionBorderOverlay() {
   const overlayCtx = overlay.getContext('2d');
   const overlayData = overlayCtx.createImageData(TEX_W, TEX_H);
   const out = overlayData.data;
-  const stamp = (cx, cy, r, g, b) => {
-    const x0 = Math.max(0, cx - REGION_BORDER_RADIUS);
-    const x1 = Math.min(TEX_W - 1, cx + REGION_BORDER_RADIUS);
-    const y0 = Math.max(0, cy - REGION_BORDER_RADIUS);
-    const y1 = Math.min(TEX_H - 1, cy + REGION_BORDER_RADIUS);
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const i = (y * TEX_W + x) * 4;
-        out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = 255;
-      }
-    }
-  };
 
   const ALPHA_THRESHOLD = 127;
   const PAD = REGION_BORDER_RADIUS + 2;
@@ -231,18 +223,25 @@ function computeRegionBorderOverlay() {
       maskCtx.fill();
     }
     const { data } = maskCtx.getImageData(x0, y0, w, h);
-    const inside = (lx, ly) => data[(ly * w + lx) * 4 + 3] > ALPHA_THRESHOLD;
+    const inside = (lx, ly) => lx >= 0 && lx < w && ly >= 0 && ly < h && data[(ly * w + lx) * 4 + 3] > ALPHA_THRESHOLD;
     const [r, g, b] = regionRgb.get(region);
+    const stamp = (lx, ly) => {
+      for (let dy = -REGION_BORDER_RADIUS; dy <= REGION_BORDER_RADIUS; dy++) {
+        for (let dx = -REGION_BORDER_RADIUS; dx <= REGION_BORDER_RADIUS; dx++) {
+          const nx = lx + dx;
+          const ny = ly + dy;
+          if (!inside(nx, ny)) continue; // ne jamais déborder hors de sa propre région
+          const i = ((y0 + ny) * TEX_W + (x0 + nx)) * 4;
+          out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = 255;
+        }
+      }
+    };
 
     for (let ly = 0; ly < h; ly++) {
       for (let lx = 0; lx < w; lx++) {
         if (!inside(lx, ly)) continue;
-        const left = lx > 0 && inside(lx - 1, ly);
-        const right = lx < w - 1 && inside(lx + 1, ly);
-        const up = ly > 0 && inside(lx, ly - 1);
-        const down = ly < h - 1 && inside(lx, ly + 1);
-        if (left && right && up && down) continue; // pixel intérieur, pas une frontière
-        stamp(x0 + lx, y0 + ly, r, g, b);
+        if (inside(lx - 1, ly) && inside(lx + 1, ly) && inside(lx, ly - 1) && inside(lx, ly + 1)) continue; // pixel intérieur, pas une frontière
+        stamp(lx, ly);
       }
     }
   }
@@ -261,7 +260,7 @@ function drawBaseCanvas() {
   // jamais, seul le remplissage (attribué/sélectionné) est redessiné ensuite.
   path.context(baseCtx);
   baseCtx.strokeStyle = 'rgba(0,0,0,0.9)';
-  baseCtx.lineWidth = TEX_W * 0.0012;
+  baseCtx.lineWidth = TEX_W * 0.0006;
   for (const geometry of canvasGeometryById.values()) {
     baseCtx.beginPath();
     path({ type: 'Feature', geometry });
