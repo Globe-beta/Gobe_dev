@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import Globe from 'globe.gl';
+import { geoEquirectangular, geoPath } from 'd3-geo';
+import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import './style.css';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
 
@@ -11,36 +13,135 @@ const PLAYERS = [
 ];
 const MARKER_NEUTRAL = '#e8e8e8'; // ville/usine non attribuée : reste bien visible (carré blanc)
 
-// Matériaux du globe : on passe par de vrais THREE.Material (polygonCapMaterial /
-// polygonSideMaterial) plutôt que par des chaînes de couleur CSS (polygonCapColor /
-// polygonSideColor). three-globe applique par défaut depthWrite:true à ses matériaux
-// internes même quand ils sont rendus invisibles par transparence — un territoire non
-// attribué (alpha 0) écrit alors quand même dans le tampon de profondeur, ce qui peut
-// perturber le tri des surfaces transparentes voisines (parois, contours). En fournissant
-// nos propres matériaux avec depthWrite:false pour tout ce qui est invisible ou semi-
-// transparent, on élimine ce risque à la source.
-//
-// Une seule instance de matériau PERMANENTE par territoire (jamais remplacée), dont on
-// modifie les propriétés (couleur, opacité) en place. Deux approches précédentes ont
-// échoué de façon identique sur l'appareil de test — un territoire correct, tous les
-// autres avec la mauvaise couleur, quel que soit le nombre de territoires réellement
-// touchés (y compris un seul) : (1) des instances de matériau partagées entre
-// territoires, (2) des instances dédiées par territoire mais REMPLACÉES (changement de
-// référence, conic.material[i] = autreInstance) à chaque changement d'état. Remplacer une
-// référence de matériau force le moteur de rendu à retraiter l'objet (nouveau programme/
-// uniformes à lier) ; modifier les propriétés d'un objet déjà en place est un chemin bien
-// plus courant et éprouvé. Si le souci vient d'une confusion d'état côté pilote graphique
-// après un changement de RÉFÉRENCE de matériau, ça devrait disparaître ici puisque la
-// référence, elle, ne change jamais.
-const capMaterialsById = new Map();
-const sideMaterialsById = new Map();
-for (const t of TERRITOIRES) {
-  capMaterialsById.set(t.id, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
-  sideMaterialsById.set(t.id, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
+// ---------- Rendu des territoires : une texture peinte, pas 195 objets 3D ----------
+// Nouvelle approche, plus simple et avec moins de pièces mobiles que la précédente
+// (chaque territoire était un objet 3D séparé avec son propre matériau — jusqu'à 195 pour
+// 47 territoires découpés en îles/morceaux — et plusieurs versions de cette approche ont
+// montré le même bug non reproductible sur l'appareil de test : un seul territoire
+// correct, tous les autres avec la mauvaise couleur). Ici, il n'y a qu'UN SEUL objet 3D
+// (la sphère du globe) et UNE SEULE texture : "attribuer" un territoire, c'est peindre sa
+// forme sur un canvas 2D, exactement comme colorier une carte papier. Le clic ne fait plus
+// de raycasting 3D non plus : on récupère directement les coordonnées (lat, lng) du point
+// touché sur le globe, et on cherche par calcul géométrique simple quel territoire les
+// contient (point-in-polygon). Beaucoup moins de code, beaucoup moins de surface pour un
+// bug de rendu.
+const TEX_W = 1600;
+const TEX_H = 800;
+const projection = geoEquirectangular().scale(TEX_W / (2 * Math.PI)).translate([TEX_W / 2, TEX_H / 2]);
+const path = geoPath(projection);
+
+// Le script de build (scripts/build-geo.mjs) "déplie" les territoires qui traversent
+// l'antiméridien (ex. Extrême-Orient russe, Pacifique) en décalant leurs longitudes
+// au-delà de 180°, pour que three-globe (qui n'a pas de découpage automatique à
+// l'antiméridien) les triangule d'un seul tenant. d3-geo fait exactement l'inverse : il
+// sait très bien découper proprement un contour qui passe par ±180°, mais seulement si on
+// lui donne les longitudes dans leur intervalle standard [-180, 180]. On annule donc le
+// dépliage juste pour le dessin sur le canvas.
+function dewrapRing(ring) {
+  return ring.map(([lon, lat]) => [lon > 180 ? lon - 360 : lon, lat]);
 }
-const PLAYER_COLORS = PLAYERS.map((p) => new THREE.Color(p.color));
-const HIGHLIGHT_COLOR = new THREE.Color(0xffe066);
-const OWNED_SIDE_COLOR = new THREE.Color(0x141414);
+
+// L'orientation des anneaux (sens horaire/antihoraire) dans nos données issues de la
+// fusion (turf/union) n'est pas cohérente d'un territoire à l'autre : d3-geo s'appuie
+// pourtant sur cette convention pour distinguer "l'intérieur" (le territoire) de
+// "l'extérieur" (le reste du monde) lors du découpage à l'antiméridien. Un anneau dans le
+// mauvais sens fait donc dessiner l'inverse de la forme voulue (tout SAUF le territoire).
+// Plutôt que de deviner la règle exacte (elle s'est révélée contradictoire d'un territoire
+// à l'autre), on corrige de façon empirique : si l'aire projetée d'un morceau dépasse une
+// fraction déraisonnable du canevas entier, c'est qu'il est à l'envers, et on inverse
+// l'ordre de ses points (ce qui inverse son orientation) pour obtenir la bonne forme.
+const CANVAS_AREA = TEX_W * TEX_H;
+function fixPieceWinding(rings) {
+  const area = Math.abs(path.area({ type: 'Polygon', coordinates: rings }));
+  if (area < CANVAS_AREA * 0.4) return rings;
+  return rings.map((ring) => [...ring].reverse());
+}
+function dewrapGeometry(geometry) {
+  if (geometry.type === 'Polygon') return { type: 'Polygon', coordinates: fixPieceWinding(geometry.coordinates.map(dewrapRing)) };
+  if (geometry.type === 'MultiPolygon') return { type: 'MultiPolygon', coordinates: geometry.coordinates.map((poly) => fixPieceWinding(poly.map(dewrapRing))) };
+  return geometry;
+}
+
+// territoireId -> géométrie telle que livrée par build-geo.mjs (utilisée pour la
+// détection de clic : point-in-polygon, insensible au dépliage antiméridien tant que le
+// point testé est décalé de la même façon si besoin — voir findTerritoireAt).
+const rawGeometryById = new Map();
+// territoireId -> géométrie "dépliée" (utilisée pour le dessin sur le canvas).
+const canvasGeometryById = new Map();
+
+let earthImg = null;
+let baseCanvas = null;
+let baseCtx = null;
+let liveCanvas = null;
+let liveCtx = null;
+let globeTexture = null;
+
+function drawBaseCanvas() {
+  baseCanvas = document.createElement('canvas');
+  baseCanvas.width = TEX_W;
+  baseCanvas.height = TEX_H;
+  baseCtx = baseCanvas.getContext('2d');
+  baseCtx.drawImage(earthImg, 0, 0, TEX_W, TEX_H);
+
+  // Frontières de tous les territoires, dessinées une seule fois : elles ne changent
+  // jamais, seul le remplissage (attribué/sélectionné) est redessiné ensuite.
+  path.context(baseCtx);
+  baseCtx.strokeStyle = 'rgba(255,255,255,0.35)';
+  baseCtx.lineWidth = 1;
+  for (const geometry of canvasGeometryById.values()) {
+    baseCtx.beginPath();
+    path({ type: 'Feature', geometry });
+    baseCtx.stroke();
+  }
+
+  liveCanvas = document.createElement('canvas');
+  liveCanvas.width = TEX_W;
+  liveCanvas.height = TEX_H;
+  liveCtx = liveCanvas.getContext('2d');
+  globeTexture = new THREE.CanvasTexture(liveCanvas);
+}
+
+// Repeint le territoire attribué/sélectionné par-dessus la carte de base (déjà à jour pour
+// tous les autres territoires, qui n'ont donc pas besoin d'être retouchés). Pour l'état
+// initial (redrawLive(null) implicite au chargement), on copie juste la base telle quelle.
+function redrawLive() {
+  liveCtx.drawImage(baseCanvas, 0, 0);
+  path.context(liveCtx);
+
+  const paint = (id, fillStyle) => {
+    const geometry = canvasGeometryById.get(id);
+    if (!geometry) return;
+    liveCtx.fillStyle = fillStyle;
+    liveCtx.beginPath();
+    path({ type: 'Feature', geometry });
+    liveCtx.fill();
+  };
+
+  for (const [id, p] of Object.entries(ownership)) {
+    paint(id, PLAYERS[p].color);
+  }
+  if (selectedId) paint(selectedId, '#ffe066');
+
+  globeTexture.needsUpdate = true;
+}
+
+// Cherche quel territoire contient le point (lat, lng) touché sur le globe. Comme pour le
+// dessin, certains territoires ont des longitudes décalées au-delà de ±180° dans les
+// données ; on teste donc le point à sa position normale ET décalée de ±360°, l'une des
+// deux correspondra forcément à la représentation stockée pour ce territoire.
+function findTerritoireAt(lat, lng) {
+  for (const [id, geometry] of rawGeometryById) {
+    const feature = { type: 'Feature', geometry };
+    if (
+      booleanPointInPolygon([lng, lat], feature) ||
+      booleanPointInPolygon([lng + 360, lat], feature) ||
+      booleanPointInPolygon([lng - 360, lat], feature)
+    ) {
+      return id;
+    }
+  }
+  return null;
+}
 
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
@@ -52,55 +153,6 @@ let selectedId = null;
 const territoiresParRegion = {};
 for (const t of TERRITOIRES) {
   (territoiresParRegion[t.region] ??= []).push(t.id);
-}
-
-// Modifie EN PLACE les propriétés du matériau déjà assigné à ce territoire (jamais de
-// remplacement de référence). Retourne la même instance, pour rester compatible avec
-// polygonCapMaterial/polygonSideMaterial qui s'attendent à recevoir un matériau.
-function capMaterialForTerritoire(id) {
-  const mat = capMaterialsById.get(id);
-  if (id === selectedId) {
-    mat.color.copy(HIGHLIGHT_COLOR);
-    mat.opacity = 1;
-    mat.transparent = false;
-    mat.depthWrite = true;
-    return mat;
-  }
-  const p = ownership[id];
-  if (p === undefined) {
-    mat.opacity = 0;
-    mat.transparent = true;
-    mat.depthWrite = false;
-    return mat;
-  }
-  mat.color.copy(PLAYER_COLORS[p]);
-  mat.opacity = 1;
-  mat.transparent = false;
-  mat.depthWrite = true;
-  return mat;
-}
-
-function sideMaterialForTerritoire(id) {
-  const mat = sideMaterialsById.get(id);
-  if (id === selectedId) {
-    mat.color.copy(HIGHLIGHT_COLOR);
-    mat.opacity = 0.7;
-    mat.transparent = true;
-    mat.depthWrite = false;
-    return mat;
-  }
-  const p = ownership[id];
-  if (p === undefined) {
-    mat.opacity = 0;
-    mat.transparent = true;
-    mat.depthWrite = false;
-    return mat;
-  }
-  mat.color.copy(OWNED_SIDE_COLOR);
-  mat.opacity = 0.55;
-  mat.transparent = true;
-  mat.depthWrite = false;
-  return mat;
 }
 
 function markerColorForTerritoire(id) {
@@ -274,12 +326,10 @@ invadeBtn.onclick = () => {
 cancelBtn.onclick = clearSelection;
 
 // ---------- Détection tapotement propre vs glissement (rotation du globe) ----------
-// three-globe déclenche onPolygonClick sur l'événement 'click' du canvas ; sur iPad, un
-// tapotement qui glisse légèrement pendant une rotation du globe pouvait quand même
-// produire un ou plusieurs clics sur des territoires traversés au passage ("ça défile
-// plusieurs territoires à la suite comme si ça cherchait"). On mesure nous-mêmes la
-// distance et la durée entre l'appui et le relâchement, et on n'autorise l'attribution
-// que si ça ressemble vraiment à un tapotement immobile.
+// Un tapotement qui glisse légèrement pendant une rotation du globe pouvait quand même
+// être interprété comme un clic. On mesure nous-mêmes la distance et la durée entre
+// l'appui et le relâchement, et on n'autorise la sélection que si ça ressemble vraiment à
+// un tapotement immobile.
 let pointerDownX = 0;
 let pointerDownY = 0;
 let pointerDownAt = 0;
@@ -299,17 +349,19 @@ function wasCleanTap() {
 }
 
 // ---------- Globe ----------
+let lastClickInfo = '—';
 const world = new Globe(globeEl)
   .onGlobeReady(() => { window.__globeReady = true; })
-  .globeImageUrl('textures/earth-day.jpg')
   .backgroundColor('#000010')
   .showAtmosphere(true)
   .atmosphereColor('#6fb1ff')
-  .polygonAltitude(0.006)
-  .polygonCapMaterial((f) => capMaterialForTerritoire(f.properties.territoireId))
-  .polygonSideMaterial((f) => sideMaterialForTerritoire(f.properties.territoireId))
-  .polygonStrokeColor(() => 'rgba(255,255,255,0.35)')
-  .onPolygonClick((f) => { if (!wasCleanTap()) return; selectTerritoire(f.properties.territoireId); })
+  .onGlobeClick(({ lat, lng }) => {
+    if (!wasCleanTap()) return;
+    const id = findTerritoireAt(lat, lng);
+    lastClickInfo = `${lat.toFixed(1)},${lng.toFixed(1)}→${id || 'aucun'}`;
+    if (id) selectTerritoire(id);
+    else renderAll();
+  })
   .htmlLat((d) => d.lat)
   .htmlLng((d) => d.lon)
   .htmlAltitude(0.012)
@@ -348,9 +400,7 @@ function buildMarkerElement(d) {
   return el;
 }
 
-// Appelée uniquement depuis le bouton "Envahir" (confirmation explicite) : plus besoin
-// d'anti-rebond ici, un tapotement imprécis ne fait plus que sélectionner (voir
-// selectTerritoire), jamais attribuer directement.
+// Appelée uniquement depuis le bouton "Envahir" (confirmation explicite).
 function assignTerritoire(id) {
   const region = TERRITOIRE_PAR_ID[id]?.region;
   ownership[id] = activePlayer;
@@ -362,37 +412,8 @@ function assignTerritoire(id) {
   }
 }
 
-// Un territoire une fois créé dans la scène 3D (à la première réception des données) n'est
-// plus jamais recréé : seul son matériau doit changer quand il est attribué/sélectionné.
-// On ne touche qu'aux territoires dont l'état vient réellement de changer (ceux attribués,
-// le sélectionné actuel, et ceux qui l'étaient au tour précédent et ne le sont plus) plutôt
-// que de réaffecter les ~195 morceaux à chaque rendu : en plus d'être inutile (un territoire
-// dont l'état ne change pas n'a pas besoin qu'on retouche son matériau), un appareil sous
-// contrainte a affiché un comportement incohérent (un seul territoire correct, tous les
-// autres avec la mauvaise couleur) qui n'apparaît qu'après une réaffectation en masse.
-let touchedIds = new Set();
-function applyMaterialsDirectly(idsToTouch) {
-  if (idsToTouch.size === 0) return 0;
-  let updated = 0;
-  world.scene().traverse((obj) => {
-    if (obj.__globeObjType !== 'polygon') return;
-    const conic = obj.children[0];
-    if (!conic || !Array.isArray(conic.material)) return;
-    const feature = obj.__data && obj.__data.data;
-    const id = feature && feature.properties && feature.properties.territoireId;
-    if (!id || !idsToTouch.has(id)) return;
-    conic.material[0] = sideMaterialForTerritoire(id);
-    conic.material[1] = capMaterialForTerritoire(id);
-    updated++;
-  });
-  return updated;
-}
-
 function renderAll() {
-  const idsToTouch = new Set([...touchedIds, ...Object.keys(ownership)]);
-  if (selectedId) idsToTouch.add(selectedId);
-  const updated = applyMaterialsDirectly(idsToTouch);
-  touchedIds = new Set([...Object.keys(ownership), ...(selectedId ? [selectedId] : [])]);
+  if (globeTexture) redrawLive();
   // Rafraîchit les marqueurs (nouvelle référence de tableau pour forcer le re-rendu des couleurs)
   world.htmlElementsData([...markersData]);
 
@@ -410,15 +431,12 @@ function renderAll() {
     invadeBar.classList.remove('show');
   }
 
-  // Diagnostic : liste explicitement les territoires réellement marqués "attribués" dans
-  // les données, pour pouvoir comparer avec ce qui s'affiche visuellement en cas de doute
-  // (ex. tout le globe qui semble attribué alors que peu de territoires le sont vraiment).
-  // "maj:N" indique combien de morceaux de territoire ont été effectivement touchés à ce
-  // rendu (quelques-uns seulement : celui sélectionné/désélectionné, ceux attribués), pas
-  // l'ensemble des ~195 morceaux du globe.
+  // Diagnostic : liste explicitement les territoires réellement marqués "attribués", et le
+  // dernier point touché avec le territoire trouvé (ou "aucun") — utile pour vérifier que
+  // la détection de clic (point-in-polygon) retrouve bien le bon territoire.
   if (readyStatusBase) {
     const owned = Object.keys(ownership);
-    statusEl.textContent = `${readyStatusBase} · maj:${updated} · sel:${selectedId || '—'} · attribués(${owned.length}):${owned.join(',') || '—'}`;
+    statusEl.textContent = `${readyStatusBase} · clic:${lastClickInfo} · attribués(${owned.length}):${owned.join(',') || '—'}`;
   }
 }
 let readyStatusBase = '';
@@ -438,6 +456,15 @@ function fetchJson(url, timeoutMs = 12000) {
     .finally(() => clearTimeout(timer));
 }
 
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Échec du chargement de l'image ${url}`));
+    img.src = url;
+  });
+}
+
 // Cache-busting : geo/*.json ont un nom fixe (pas de hash comme les assets JS/CSS),
 // le CDN/navigateur peut donc en garder une ancienne copie en cache. On force le
 // rechargement en accrochant l'identifiant de build à l'URL.
@@ -455,10 +482,22 @@ function loadGameData(attempt = 1) {
   Promise.all([
     fetchJson('geo/territoires.geo.json' + cacheBust),
     fetchJson('geo/centroides.json' + cacheBust),
+    earthImg || loadImage('textures/earth-day.jpg' + cacheBust).then((img) => { earthImg = img; }),
   ]).then(([geo, centroides]) => {
     const totalPoints = geo.features.reduce((a, f) => a + countPoints(f.geometry), 0);
     statusEl.textContent = `Prêt (${geo.features.length} terr., ${totalPoints} pts géo)`;
-    world.polygonsData(geo.features);
+
+    for (const f of geo.features) {
+      const id = f.properties.territoireId;
+      rawGeometryById.set(id, f.geometry);
+      canvasGeometryById.set(id, dewrapGeometry(f.geometry));
+    }
+    drawBaseCanvas();
+    redrawLive();
+    const mat = world.globeMaterial();
+    mat.map = globeTexture;
+    mat.color = null;
+    mat.needsUpdate = true;
 
     markersData = [];
     for (const t of TERRITOIRES) {
@@ -471,18 +510,9 @@ function loadGameData(attempt = 1) {
       }
     }
     world.htmlElementsData(markersData);
-    renderAll();
 
-    setTimeout(() => {
-      const domMarkers = document.querySelectorAll('.city-marker, .factory-marker').length;
-      let layersOk = '?';
-      try {
-        const topGroup = world.scene().children.find((c) => c.type === 'Group');
-        layersOk = topGroup.children.filter((c) => c.children.length > 0).length;
-      } catch { /* ignore */ }
-      readyStatusBase = `build ${BUILD_ID} · Prêt · ${geo.features.length} terr. · ${totalPoints} pts · couches actives:${layersOk} · marqueurs:${domMarkers}`;
-      renderAll();
-    }, 1200);
+    readyStatusBase = `build ${BUILD_ID} · Prêt · ${geo.features.length} terr. · ${totalPoints} pts`;
+    renderAll();
   }).catch((err) => {
     if (attempt < 3) {
       setTimeout(() => loadGameData(attempt + 1), 1500);
