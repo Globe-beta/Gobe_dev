@@ -68,6 +68,46 @@ function dewrapGeometry(geometry) {
 const rawGeometryById = new Map();
 // territoireId -> géométrie "dépliée" (utilisée pour le dessin sur le canvas).
 const canvasGeometryById = new Map();
+// territoireId -> [lon, lat] (centre approximatif, pour placer nom + repère de région).
+let centroidesById = {};
+
+// Un point de couleur différent par région (22 au total), pour repérer d'un coup d'œil
+// quels territoires appartiennent à la même région — purement esthétique, sans lien avec
+// l'attribution aux joueurs. Répartition régulière sur la roue des teintes (HSL) pour que
+// deux régions consécutives dans la liste ne se ressemblent pas.
+const REGIONS = [...new Set(TERRITOIRES.map((t) => t.region))];
+const regionColor = new Map(REGIONS.map((r, i) => [r, `hsl(${Math.round((i * 360) / REGIONS.length)}, 75%, 55%)`]));
+
+// Dessine, par-dessus tout le reste (y compris la couleur d'un joueur une fois le
+// territoire attribué) : un petit point coloré par région, et le nom du territoire —
+// même police et même taille pour tous, comme demandé. Un contour sombre derrière le
+// texte blanc le garde lisible quel que soit le fond (océan, désert, couleur de joueur...).
+function drawLabels(ctx) {
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  for (const t of TERRITOIRES) {
+    const c = centroidesById[t.id];
+    if (!c) continue;
+    const [x, y] = projection(c);
+    if (x == null || y == null) continue;
+
+    ctx.beginPath();
+    ctx.arc(x, y - 8, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = regionColor.get(t.region);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = 2.5;
+    ctx.strokeText(t.nom, x, y + 5);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(t.nom, x, y + 5);
+  }
+}
 
 let earthImg = null;
 let baseCanvas = null;
@@ -121,6 +161,8 @@ function redrawLive() {
     paint(id, PLAYERS[p].color);
   }
   if (selectedId) paint(selectedId, '#ffe066');
+
+  drawLabels(liveCtx);
 
   globeTexture.needsUpdate = true;
 }
@@ -492,6 +534,7 @@ function loadGameData(attempt = 1) {
       rawGeometryById.set(id, f.geometry);
       canvasGeometryById.set(id, dewrapGeometry(f.geometry));
     }
+    centroidesById = centroides;
     drawBaseCanvas();
     redrawLive();
     const mat = world.globeMaterial();
