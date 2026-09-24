@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import Globe from 'globe.gl';
 import { geoEquirectangular, geoPath } from 'd3-geo';
 import { Delaunay } from 'd3-delaunay';
-import { union as polyUnion, intersection as polyIntersection } from 'polyclip-ts';
+import { union as polyUnion, intersection as polyIntersection, difference as polyDifference } from 'polyclip-ts';
 import simplify from '@turf/simplify';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import polylabel from 'polylabel';
@@ -139,10 +139,16 @@ function projectToPixelMultiPoly(geometry) {
 // utilise displayGeometryById.
 function drawPixelPath(ctx, multiPoly) {
   for (const poly of multiPoly) {
-    const ring = poly[0];
-    ctx.moveTo(ring[0][0], ring[0][1]);
-    for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1]);
-    ctx.closePath();
+    // Chaque Poly peut porter des trous depuis polyDifference (une case maritime moins la
+    // terre qui la chevauche, voir subtractLandFrom) : poly[0] est le contour extérieur,
+    // poly[1+] les trous (îles à exclure). Le sens de rotation opposé (garanti par
+    // polyclip-ts, convention GeoJSON standard) fait que le fillRule "nonzero" par défaut du
+    // canvas les exclut automatiquement du remplissage — encore faut-il les tracer.
+    for (const ring of poly) {
+      ctx.moveTo(ring[0][0], ring[0][1]);
+      for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i][0], ring[i][1]);
+      ctx.closePath();
+    }
   }
 }
 
@@ -169,11 +175,57 @@ function simplifyPixelMultiPoly(multiPoly, tolerance = 1.5) {
 // réel de la région (chaque cellule de Voronoï est découpée pour ne jamais déborder de
 // l'union réelle des territoires de la région). Pour une région à un seul territoire, rien à
 // partager : sa forme réelle, projetée, est gardée telle quelle.
+// Bornes [x0,y0,x1,y1] d'un MultiPoly pixel — utilisé pour ne tester que les paires de formes
+// dont les rectangles englobants se chevauchent (voir subtractLandFrom), plutôt que de lancer
+// une différence géométrique coûteuse contre chacun des 47 territoires terrestres à chaque fois.
+function bboxOfPixelMultiPoly(mp) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const poly of mp) for (const [x, y] of poly[0]) {
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  }
+  return [x0, y0, x1, y1];
+}
+function bboxesOverlap(a, b) {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
 function computeDisplayGeometry() {
+  // Cases maritimes : leur tracé dessiné à la main (voir scripts/build-geo.mjs) n'est qu'une
+  // zone candidate — sur le bord qui touche une côte, on veut suivre cette côte RÉELLE (comme
+  // n'importe quelle frontière terrestre), pas garder un simple rectangle par-dessus la terre.
+  // On soustrait donc la terre qui recouvre chaque case maritime avant tout le reste : le
+  // résultat devient sa "vraie" forme, exactement comme canvasGeometryById l'est pour un
+  // territoire terrestre — le partage géométrique (Voronoï) avec une case maritime voisine,
+  // juste en dessous, s'applique ensuite exactement de la même façon que pour deux territoires
+  // terrestres du même type dans une même région : trait droit là où il n'y a pas de côte à
+  // suivre.
+  const landPixelMPsWithBbox = TERRITOIRES
+    .filter((t) => t.type !== 'maritime')
+    .map((t) => {
+      const mp = simplifyPixelMultiPoly(projectToPixelMultiPoly(canvasGeometryById.get(t.id)));
+      return { mp, bbox: bboxOfPixelMultiPoly(mp) };
+    });
+  function subtractLandFrom(mp) {
+    const bbox = bboxOfPixelMultiPoly(mp);
+    const overlapping = landPixelMPsWithBbox.filter((l) => bboxesOverlap(bbox, l.bbox)).map((l) => l.mp);
+    if (!overlapping.length) return mp;
+    try {
+      const diff = polyDifference(mp, ...overlapping);
+      return diff.length ? diff : mp;
+    } catch {
+      return mp; // topologie dégénérée : on garde la case telle quelle plutôt que de la perdre
+    }
+  }
+
   for (const region of REGIONS) {
     const ids = territoiresParRegion[region] || [];
     if (!ids.length) continue;
-    const pixelMPs = new Map(ids.map((id) => [id, simplifyPixelMultiPoly(projectToPixelMultiPoly(canvasGeometryById.get(id)))]));
+    const pixelMPs = new Map(ids.map((id) => {
+      let mp = simplifyPixelMultiPoly(projectToPixelMultiPoly(canvasGeometryById.get(id)));
+      if (TERRITOIRE_PAR_ID[id].type === 'maritime') mp = subtractLandFrom(mp);
+      return [id, mp];
+    }));
 
     if (ids.length === 1) {
       displayGeometryById.set(ids[0], pixelMPs.get(ids[0]));
@@ -251,18 +303,21 @@ function anchorOfPixelMultiPoly(multiPoly, preferredPoint) {
   let best = null;
   let preferred = null;
   for (const poly of multiPoly) {
-    const ring = poly[0];
+    const ring = poly[0]; // aire/appartenance : seul le contour extérieur compte, jamais les trous
     let a = 0;
     for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
     const area = Math.abs(a) / 2;
-    if (!best || area > best.area) best = { ring, area };
-    if (preferredPoint && !preferred && booleanPointInPolygon(preferredPoint, { type: 'Polygon', coordinates: [ring] })) {
-      preferred = { ring, area };
+    if (!best || area > best.area) best = { poly, area };
+    if (preferredPoint && !preferred && booleanPointInPolygon(preferredPoint, { type: 'Polygon', coordinates: poly })) {
+      preferred = { poly, area };
     }
   }
   const chosen = preferred || best;
   if (!chosen) return null;
-  const label = polylabel([chosen.ring], 0.5);
+  // Le POLY entier (avec ses trous, ex. une île à l'intérieur d'une case maritime) est passé à
+  // polylabel, pas seulement son contour extérieur : sinon le point retenu pourrait tomber en
+  // plein sur un trou (une île, donc hors de la case maritime elle-même).
+  const label = polylabel(chosen.poly, 0.5);
   return { x: label[0], y: label[1] };
 }
 
@@ -442,7 +497,7 @@ function computeRegionBorderOverlay() {
     for (const mp of shapes) {
       maskCtx.beginPath();
       drawPixelPath(maskCtx, mp);
-      maskCtx.fill();
+      maskCtx.fill('evenodd');
     }
     const { data } = maskCtx.getImageData(x0, y0, w, h);
     const inside = (lx, ly) => lx >= 0 && lx < w && ly >= 0 && ly < h && data[(ly * w + lx) * 4 + 3] > ALPHA_THRESHOLD;
@@ -487,7 +542,7 @@ function drawBaseCanvas() {
     baseCtx.fillStyle = t.accessible === false ? MARITIME_LOCKED_FILL : MARITIME_FILL;
     baseCtx.beginPath();
     drawPixelPath(baseCtx, mp);
-    baseCtx.fill();
+    baseCtx.fill('evenodd');
   }
 
   // Frontières de tous les territoires, dessinées une seule fois : elles ne changent
@@ -540,7 +595,7 @@ function redrawLive() {
     liveCtx.fillStyle = fillStyle;
     liveCtx.beginPath();
     drawPixelPath(liveCtx, mp);
-    liveCtx.fill();
+    liveCtx.fill('evenodd');
   };
 
   for (const [id, p] of Object.entries(ownership)) {
