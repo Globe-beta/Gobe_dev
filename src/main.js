@@ -17,6 +17,15 @@ const PLAYERS = [
 ];
 const MARKER_NEUTRAL = '#8a8f9c'; // liseré des marqueurs ville/usine non attribués
 
+// Cases maritimes : contrairement à la terre (déjà visible via la texture satellite en
+// dessous), une case maritime sans teinte propre serait un simple contour invisible sur fond
+// d'océan. On lui donne une teinte permanente (peinte une fois, dans drawBaseCanvas, jamais
+// effacée par redrawLive qui ne repeint que par-dessus) — bleutée pour une case jouable,
+// grisée pour une case verrouillée (Arctique, avant technologie tardive).
+const MARITIME_FILL = 'rgba(64, 176, 230, 0.28)';
+const MARITIME_LOCKED_FILL = 'rgba(140, 145, 155, 0.35)';
+const CHOKEPOINT_BORDER = '#ffd23f';
+
 // Symboles des marqueurs ville/usine — mêmes silhouettes partout (sur le globe ET dans la
 // légende), pour que la légende corresponde exactement à ce qu'on voit sur la carte. Formes
 // pleines simples (pas de traits fins) : à la taille d'un marqueur, un trait fin disparaît.
@@ -469,6 +478,18 @@ function drawBaseCanvas() {
   baseCtx = baseCanvas.getContext('2d');
   baseCtx.drawImage(earthImg, 0, 0, TEX_W, TEX_H);
 
+  // Teinte permanente des cases maritimes (voir MARITIME_FILL/MARITIME_LOCKED_FILL) : avant
+  // les frontières, pour qu'elles restent tracées nettement par-dessus.
+  for (const t of TERRITOIRES) {
+    if (t.type !== 'maritime') continue;
+    const mp = displayGeometryById.get(t.id);
+    if (!mp) continue;
+    baseCtx.fillStyle = t.accessible === false ? MARITIME_LOCKED_FILL : MARITIME_FILL;
+    baseCtx.beginPath();
+    drawPixelPath(baseCtx, mp);
+    baseCtx.fill();
+  }
+
   // Frontières de tous les territoires, dessinées une seule fois : elles ne changent
   // jamais, seul le remplissage (attribué/sélectionné) est redessiné ensuite.
   baseCtx.strokeStyle = 'rgba(0,0,0,0.9)';
@@ -483,6 +504,22 @@ function drawBaseCanvas() {
   // les frontières de territoire — jamais les frontières internes entre deux territoires
   // d'une même région (voir computeRegionBorderOverlay).
   if (regionBorderOverlay) baseCtx.drawImage(regionBorderOverlay, 0, 0);
+
+  // Liseré pointillé doré des chokepoints (Détroit d'Ormuz, Canal de Suez) : par-dessus tout
+  // le reste, pour rester repérable quelle que soit la région/couleur de fond.
+  baseCtx.save();
+  baseCtx.strokeStyle = CHOKEPOINT_BORDER;
+  baseCtx.lineWidth = TEX_W * 0.0016;
+  baseCtx.setLineDash([TEX_W * 0.004, TEX_W * 0.003]);
+  for (const t of TERRITOIRES) {
+    if (!t.chokepoint) continue;
+    const mp = displayGeometryById.get(t.id);
+    if (!mp) continue;
+    baseCtx.beginPath();
+    drawPixelPath(baseCtx, mp);
+    baseCtx.stroke();
+  }
+  baseCtx.restore();
 
   liveCanvas = document.createElement('canvas');
   liveCanvas.width = TEX_W;
@@ -666,7 +703,7 @@ app.appendChild(regionLegendBar);
 const legend = document.createElement('div');
 legend.className = 'legend';
 legend.innerHTML = `
-  <div><b>47 territoires</b> · 22 régions · 18 villes</div>
+  <div><b>47 territoires</b> + <b>8 cases maritimes</b> · 25 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
@@ -674,6 +711,9 @@ legend.innerHTML = `
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Minerais']}</span> Minerais</div>
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Énergie']}</span> Énergie</div>
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Terres rares']}</span> Terres rares</div>
+  <div class="row"><span class="sq" style="border-radius:3px;background:#2f8fc7"></span> case maritime</div>
+  <div class="row"><span class="sq" style="border-radius:3px;background:#8c919b"></span> case verrouillée (technologie tardive requise)</div>
+  <div class="row"><span class="sq" style="border-radius:3px;background:transparent;border:2px dashed ${CHOKEPOINT_BORDER}"></span> chokepoint</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
   <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
 `;
@@ -718,6 +758,11 @@ function clearSelection() {
 
 invadeBtn.onclick = () => {
   if (!selectedId) return;
+  const t = TERRITOIRE_PAR_ID[selectedId];
+  if (t && t.accessible === false) {
+    showToast(`${t.nom} : verrouillé — nécessite une technologie tardive (fonte des glaces)`);
+    return;
+  }
   assignTerritoire(selectedId);
   selectedId = null;
   renderAll();
@@ -893,7 +938,8 @@ function renderAll() {
 
   if (selectedId) {
     const t = TERRITOIRE_PAR_ID[selectedId];
-    invadeLabel.textContent = `${t ? t.nom : selectedId} → ${PLAYERS[activePlayer].name} ?`;
+    const suffix = t && t.accessible === false ? ' 🔒 verrouillé' : '';
+    invadeLabel.textContent = `${t ? t.nom : selectedId}${suffix} → ${PLAYERS[activePlayer].name} ?`;
     invadeBar.classList.add('show');
   } else {
     invadeBar.classList.remove('show');

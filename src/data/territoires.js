@@ -62,6 +62,22 @@ export const TERRITOIRES = [
   { id: 'se-indochine', bloc: 'Asie-Pacifique', region: 'Asie du Sud-Est', nom: 'Indochine/Birmanie', ressources: [{ type: 'Terres rares', niveau: 3 }], enclavement: 1, slotIndustrie: 0, ville: null },
   { id: 'oc-australiecotiere', bloc: 'Asie-Pacifique', region: 'Océanie', nom: 'Australie côtière', ressources: [{ type: 'Terres rares', niveau: 3 }], enclavement: 0, slotIndustrie: 0, ville: { nom: 'Sydney', slots: 1, lat: -33.8688, lon: 151.2093 } },
   { id: 'oc-outbackpacifique', bloc: 'Asie-Pacifique', region: 'Océanie', nom: 'Outback/Pacifique', ressources: ['Minerais', 'Énergie'], enclavement: 2, slotIndustrie: 1, ville: null },
+
+  // --- Maritime : cases de mer (contours dessinés à la main, pas de source Natural Earth —
+  // voir scripts/build-geo.mjs). Pas de ville ni d'usine : seuls comptent le nom, le statut
+  // de chokepoint (goulet d'étranglement stratégique) et l'accessibilité. ---
+  { id: 'mar-ormuz', bloc: 'Maritime', region: 'Océan Indien', nom: "Détroit d'Ormuz", type: 'maritime', chokepoint: true, ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mar-indienouest', bloc: 'Maritime', region: 'Océan Indien', nom: 'Océan Indien occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mar-indienest', bloc: 'Maritime', region: 'Océan Indien', nom: 'Océan Indien oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  // Arctique : inaccessible avant une technologie tardive (fonte des glaces) — voir le blocage
+  // de l'invasion sur `accessible: false` dans main.js.
+  { id: 'mar-arctiquenordam', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique nord-américain', type: 'maritime', accessible: false, ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mar-arctiquerusse', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique russe', type: 'maritime', accessible: false, ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mar-arctiquecentral', bloc: 'Maritime', region: 'Arctique', nom: 'Passage central arctique', type: 'maritime', accessible: false, ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mar-medoccidentale', bloc: 'Maritime', region: 'Méditerranée', nom: 'Méditerranée occidentale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mar-suez', bloc: 'Maritime', region: 'Méditerranée', nom: 'Canal de Suez', type: 'maritime', chokepoint: true, ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 ];
 
 export const TERRITOIRE_PAR_ID = Object.fromEntries(TERRITOIRES.map(t => [t.id, t]));

@@ -336,6 +336,27 @@ for (const [territoireId, feats] of Object.entries(byTerritoire)) {
   merged.push(feature);
 }
 
+// ---- 3.5 Cases maritimes ----
+// Pas de source Natural Earth pour la mer : rectangles lon/lat dessinés à la main, juste assez
+// fidèles pour des cases de jeu (jamais une référence géographique précise). "Passage central
+// arctique" couvre presque toute la largeur de la carte (-179.9° à 179.9°, jamais exactement
+// ±180°, pour ne pas tomber pile sur l'antiméridien que d3-geo utilise pour découper les
+// géométries qui le traversent).
+const MARITIME_BOXES = {
+  'mar-ormuz': [[54, 24.5], [58, 24.5], [58, 27], [54, 27]],
+  'mar-indienouest': [[45, -15], [70, -15], [70, 10], [45, 10]],
+  'mar-indienest': [[75, -15], [100, -15], [100, 10], [75, 10]],
+  'mar-arctiquenordam': [[-140, 75], [-60, 75], [-60, 84], [-140, 84]],
+  'mar-arctiquerusse': [[30, 76], [178, 76], [178, 84], [30, 84]],
+  'mar-arctiquecentral': [[-179.9, 84], [179.9, 84], [179.9, 90], [-179.9, 90]],
+  'mar-medoccidentale': [[-5, 33], [15, 33], [15, 43], [-5, 43]],
+  'mar-suez': [[31.5, 27], [34.5, 27], [34.5, 32], [31.5, 32]],
+};
+for (const [territoireId, box] of Object.entries(MARITIME_BOXES)) {
+  const ring = [...box, box[0]];
+  merged.push({ type: 'Feature', properties: { territoireId }, geometry: { type: 'Polygon', coordinates: [ring] } });
+}
+
 // ---- 4. Nettoyage et simplification, île par île ----
 // Un territoire fusionné (surtout les archipels : Extrême-Orient russe, Grand Nord
 // canadien, Outback/Pacifique) est une MultiPolygon de centaines de morceaux séparés
