@@ -170,7 +170,11 @@ function computeDisplayGeometry() {
 
     const regionOuter = polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
 
-    const sites = ids.map((id) => anchorOfPixelMultiPoly(pixelMPs.get(id)));
+    const sites = ids.map((id) => {
+      const ville = TERRITOIRE_PAR_ID[id]?.ville;
+      const preferredPoint = ville ? projection([ville.lon, ville.lat]) : undefined;
+      return anchorOfPixelMultiPoly(pixelMPs.get(id), preferredPoint);
+    });
     let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
     for (const poly of regionOuter) {
       for (const [x, y] of poly[0]) {
@@ -220,19 +224,33 @@ let regionBorderOverlay = null;
 // d'inaccessibilité" (polylabel, la même technique que Mapbox pour le placement des noms de
 // pays sur une carte) plutôt que le centre géométrique : contrairement au centre, ce point
 // est TOUJOURS à l'intérieur de la forme, y compris pour une forme en croissant, avec une
-// baie, ou coupée en plusieurs îles (on ne garde alors que la plus grande).
-function anchorOfPixelMultiPoly(multiPoly) {
+// baie, ou coupée en plusieurs îles.
+//
+// Choix du morceau (pour un territoire en plusieurs îles) : par défaut, le plus grand par
+// aire — mais certains territoires regroupent volontairement des pays très éloignés (ex.
+// "Europe germanique" = Allemagne + Scandinavie + pays baltes + Groenland + Islande, par
+// choix de design du jeu, comme "Asie du Sud" qui entoure l'Inde). Dans ce cas, le plus
+// grand morceau par aire n'est pas forcément le plus pertinent (le Groenland est bien plus
+// grand que l'Allemagne alors que le territoire s'appelle "Europe germanique") : si un point
+// préféré est fourni (ex. la ville du territoire, déjà placée à la main au bon endroit), on
+// choisit plutôt le morceau qui le contient.
+function anchorOfPixelMultiPoly(multiPoly, preferredPoint) {
   if (!multiPoly) return null;
   let best = null;
+  let preferred = null;
   for (const poly of multiPoly) {
     const ring = poly[0];
     let a = 0;
     for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
     const area = Math.abs(a) / 2;
     if (!best || area > best.area) best = { ring, area };
+    if (preferredPoint && !preferred && booleanPointInPolygon(preferredPoint, { type: 'Polygon', coordinates: [ring] })) {
+      preferred = { ring, area };
+    }
   }
-  if (!best) return null;
-  const label = polylabel([best.ring], 0.5);
+  const chosen = preferred || best;
+  if (!chosen) return null;
+  const label = polylabel([chosen.ring], 0.5);
   return { x: label[0], y: label[1] };
 }
 
@@ -854,7 +872,8 @@ function loadGameData(attempt = 1) {
     }
     computeDisplayGeometry();
     for (const t of TERRITOIRES) {
-      const anchor = anchorOfPixelMultiPoly(displayGeometryById.get(t.id));
+      const preferredPoint = t.ville ? projection([t.ville.lon, t.ville.lat]) : undefined;
+      const anchor = anchorOfPixelMultiPoly(displayGeometryById.get(t.id), preferredPoint);
       if (anchor) labelAnchorById.set(t.id, anchor);
     }
     regionBorderOverlay = computeRegionBorderOverlay();
