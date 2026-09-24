@@ -801,9 +801,14 @@ function placeRegionLegend() {
 }
 placeRegionLegend();
 
-const legend = document.createElement('div');
+// Même principe que la liste des régions : menu déroulant, replié par défaut sur téléphone
+// (où la légende dépliée couvrait près de la moitié de l'écran), déplié sur grand écran.
+const legend = document.createElement('details');
 legend.className = 'legend';
+legend.open = window.matchMedia('(min-width: 700px)').matches;
 legend.innerHTML = `
+  <summary>Légende</summary>
+  <div class="legend-body">
   <div><b>47 territoires</b> + <b>16 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
@@ -815,6 +820,7 @@ legend.innerHTML = `
   <div class="row"><span class="sq" style="border-radius:3px;background:#2f8fc7"></span> case maritime</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
   <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
+  </div>
 `;
 app.appendChild(legend);
 

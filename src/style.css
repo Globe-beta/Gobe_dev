@@ -116,7 +116,10 @@ html, body {
   position: absolute;
   bottom: max(12px, env(safe-area-inset-bottom));
   left: 12px;
-  z-index: 10;
+  /* Au-dessus des marqueurs du globe (ville/usine/ressources), dont le z-index est attribué
+     automatiquement par le moteur 3D et dépasse 10 : sinon, déplié sur téléphone, leurs
+     icônes passaient par-dessus le texte de la légende. */
+  z-index: 9996;
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: 12px;
@@ -126,6 +129,18 @@ html, body {
   max-width: 260px;
   line-height: 1.6;
 }
+.legend summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+}
+.legend summary::-webkit-details-marker { display: none; }
+.legend summary::before { content: '▸ '; }
+.legend[open] summary::before { content: '▾ '; }
+.legend[open] { background: #0f121c; }
+.legend-body { margin-top: 6px; max-height: 60vh; overflow-y: auto; }
 .legend b { color: var(--text); }
 .legend .row { display: flex; align-items: center; gap: 6px; }
 .legend .sq { width: 10px; height: 10px; border-radius: 2px; background: #fff; display: inline-block; }
@@ -243,7 +258,7 @@ html, body {
   bottom: max(12px, env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%) translateY(12px);
-  z-index: 20;
+  z-index: 9998; /* au-dessus de la légende (9996), qui peut être dépliée juste à côté */
   display: flex;
   align-items: center;
   gap: 10px;
