@@ -146,6 +146,12 @@ html, body {
 }
 .poi-marker svg { width: 60%; height: 60%; display: block; }
 .poi-marker--factory { cursor: default; pointer-events: none; }
+.poi-marker--resource {
+  border-radius: 50%;
+  border-color: #8a8f9c;
+  cursor: default;
+  pointer-events: none;
+}
 
 .tooltip {
   font: 13px/1.5 system-ui, sans-serif;

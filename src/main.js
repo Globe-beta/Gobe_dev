@@ -23,6 +23,20 @@ const MARKER_NEUTRAL = '#8a8f9c'; // liseré des marqueurs ville/usine non attri
 const CITY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="3" y="10" width="6" height="11"/><rect x="10" y="4" width="6" height="17"/><rect x="17" y="13" width="4" height="8"/></svg>';
 const FACTORY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="2" y="12" width="20" height="9"/><rect x="5" y="6" width="3" height="7"/><rect x="11" y="3" width="3" height="10"/><rect x="17" y="8" width="3" height="5"/></svg>';
 
+// Un symbole par type de ressource (celles listées dans TERRITOIRES[].ressources), affiché
+// dans un petit cercle à côté de chaque usine — voir buildResourceMarkers.
+const RESOURCE_ICON_SVG = {
+  'Denrées': '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="12,2 20,9 20,21 4,21 4,9"/></svg>',
+  'Minerais': '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="12,3 20,9 12,21 4,9"/></svg>',
+  'Énergie': '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="13,2 4,14 11,14 9,22 20,9 13,9"/></svg>',
+  'Terres rares': '<svg viewBox="0 0 24 24" fill="#1a1d24"><path d="M6 3h4v10a2 2 0 104 0V3h4v10a6 6 0 11-12 0z"/></svg>',
+};
+// Une ressource est soit une simple chaîne ('Denrées'), soit { type, niveau } (ex. Terres
+// rares) — ce petit accesseur évite de refaire cette distinction à chaque endroit du code.
+function resourceTypeOf(r) {
+  return typeof r === 'string' ? r : r.type;
+}
+
 // ---------- Rendu des territoires : une texture peinte, pas 195 objets 3D ----------
 // Nouvelle approche, plus simple et avec moins de pièces mobiles que la précédente
 // (chaque territoire était un objet 3D séparé avec son propre matériau — jusqu'à 195 pour
@@ -571,6 +585,10 @@ legend.innerHTML = `
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
+  <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Denrées']}</span> Denrées</div>
+  <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Minerais']}</span> Minerais</div>
+  <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Énergie']}</span> Énergie</div>
+  <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Terres rares']}</span> Terres rares</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
   <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
 `;
@@ -693,14 +711,22 @@ function buildMarkerElement(d) {
   anchor.className = 'poi-anchor';
   const marker = document.createElement('div');
   marker.className = 'poi-marker';
-  marker.style.borderColor = markerColorForTerritoire(d.territoireId);
-  marker.innerHTML = d.type === 'city' ? CITY_ICON_SVG : FACTORY_ICON_SVG;
   anchor.appendChild(marker);
   if (d.type === 'city') {
+    marker.style.borderColor = markerColorForTerritoire(d.territoireId);
+    marker.innerHTML = CITY_ICON_SVG;
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
-  } else {
+  } else if (d.type === 'factory') {
+    marker.style.borderColor = markerColorForTerritoire(d.territoireId);
+    marker.innerHTML = FACTORY_ICON_SVG;
     marker.classList.add('poi-marker--factory');
+  } else {
+    // ressource : liseré neutre fixe (ce n'est pas un attribut du joueur, mais du
+    // territoire — il ne change pas selon qui possède l'usine).
+    marker.classList.add('poi-marker--resource');
+    marker.innerHTML = RESOURCE_ICON_SVG[d.resourceType] || '';
+    marker.title = d.resourceType;
   }
   return anchor;
 }
@@ -717,6 +743,10 @@ const POI_ALT_HIDDEN = 2.2;
 const POI_ALT_FULL = 0.45;
 const POI_ALT_CLOSE = 0.12;
 const POI_MIN_SCALE = 0.6;
+
+// Décalage (en degrés) des cercles de ressource sous leur usine — voir loadGameData.
+const RESOURCE_LAT_OFFSET = 1;
+const RESOURCE_LON_SPACING = 1.2;
 const POI_MAX_SCALE = 4;
 function updatePoiScale({ altitude }) {
   let scale;
@@ -813,9 +843,8 @@ function loadGameData(attempt = 1) {
 
   Promise.all([
     fetchJson('geo/territoires.geo.json' + cacheBust),
-    fetchJson('geo/centroides.json' + cacheBust),
     earthImg || loadImage('textures/earth-day.jpg' + cacheBust).then((img) => { earthImg = img; }),
-  ]).then(([geo, centroides]) => {
+  ]).then(([geo]) => {
     const totalPoints = geo.features.reduce((a, f) => a + countPoints(f.geometry), 0);
     statusEl.textContent = `Prêt (${geo.features.length} terr., ${totalPoints} pts géo)`;
 
@@ -841,9 +870,29 @@ function loadGameData(attempt = 1) {
       if (t.ville) {
         markersData.push({ type: 'city', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots, lat: t.ville.lat, lon: t.ville.lon });
       }
-      if (t.slotIndustrie && centroides[t.id]) {
-        const [lon, lat] = centroides[t.id];
+      const anchor = labelAnchorById.get(t.id);
+      if (t.slotIndustrie && anchor) {
+        const [lon, lat] = projection.invert([anchor.x, anchor.y]);
         markersData.push({ type: 'factory', territoireId: t.id, lat, lon });
+        // Une usine produit une des ressources du territoire (au choix du joueur, à chaque
+        // tour) : on affiche donc un petit cercle par ressource juste sous l'usine, en ligne,
+        // centré sur elle. L'écart en longitude est compensé par cos(latitude) — sans ça, les
+        // cercles se retrouveraient bien plus écartés à l'équateur que près des pôles, où les
+        // degrés de longitude représentent une distance à l'écran beaucoup plus petite.
+        const resources = t.ressources || [];
+        if (resources.length) {
+          const lonSpacing = Math.min(6, RESOURCE_LON_SPACING / Math.max(0.15, Math.cos((lat * Math.PI) / 180)));
+          resources.forEach((r, i) => {
+            const offset = (i - (resources.length - 1) / 2) * lonSpacing;
+            markersData.push({
+              type: 'resource',
+              resourceType: resourceTypeOf(r),
+              territoireId: t.id,
+              lat: lat - RESOURCE_LAT_OFFSET,
+              lon: lon + offset,
+            });
+          });
+        }
       }
     }
     world.htmlElementsData(markersData);
