@@ -20,7 +20,10 @@ const MARKER_NEUTRAL = '#8a8f9c'; // liseré des marqueurs ville/usine non attri
 // Symboles des marqueurs ville/usine — mêmes silhouettes partout (sur le globe ET dans la
 // légende), pour que la légende corresponde exactement à ce qu'on voit sur la carte. Formes
 // pleines simples (pas de traits fins) : à la taille d'un marqueur, un trait fin disparaît.
-const CITY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="3" y="10" width="6" height="11"/><rect x="10" y="4" width="6" height="17"/><rect x="17" y="13" width="4" height="8"/></svg>';
+// Étoile (le symbole classique des capitales sur une carte) plutôt qu'une silhouette
+// d'immeubles : à la taille d'un marqueur, cette dernière se confondait visuellement avec
+// l'usine (toutes deux réduites à "des barres verticales") — l'étoile est nettement distincte.
+const CITY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="12,1 15,9 23,9 16.5,14 19,22 12,17 5,22 7.5,14 1,9 9,9"/></svg>';
 const FACTORY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="2" y="12" width="20" height="9"/><rect x="5" y="6" width="3" height="7"/><rect x="11" y="3" width="3" height="10"/><rect x="17" y="8" width="3" height="5"/></svg>';
 
 // Un symbole par type de ressource (celles listées dans TERRITOIRES[].ressources), affiché
@@ -251,6 +254,70 @@ function anchorOfPixelMultiPoly(multiPoly, preferredPoint) {
   const chosen = preferred || best;
   if (!chosen) return null;
   const label = polylabel([chosen.ring], 0.5);
+  return { x: label[0], y: label[1] };
+}
+
+// Calcule un point d'ancrage bien à l'intérieur du territoire (comme anchorOfPixelMultiPoly),
+// mais délibérément à l'opposé de avoidPoint plutôt qu'au centre — utilisé pour poser l'usine
+// loin de la ville sur un même territoire, jamais juste à côté. On reste sur le MÊME morceau
+// que celui contenant avoidPoint (jamais un autre bout de terre isolé, même lointain) : on
+// coupe ce morceau en deux par une droite perpendiculaire à la direction ville→centre,
+// passant par le centre, et on garde la moitié opposée à la ville, dans laquelle on cherche
+// le point le mieux inscrit (polylabel) — donc bien à l'intérieur, pas juste sur un bord.
+function factoryAnchorFarFrom(multiPoly, avoidPoint) {
+  if (!multiPoly) return null;
+  let chosen = null;
+  for (const poly of multiPoly) {
+    const ring = poly[0];
+    let a = 0;
+    for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+    const area = Math.abs(a) / 2;
+    if (!chosen || area > chosen.area) chosen = { ring, area };
+    if (booleanPointInPolygon(avoidPoint, { type: 'Polygon', coordinates: [ring] })) {
+      chosen = { ring, area };
+      break;
+    }
+  }
+  if (!chosen) return null;
+
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const [x, y] of chosen.ring) {
+    bx0 = Math.min(bx0, x); by0 = Math.min(by0, y);
+    bx1 = Math.max(bx1, x); by1 = Math.max(by1, y);
+  }
+  const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
+  let nx = cx - avoidPoint[0], ny = cy - avoidPoint[1];
+  const len = Math.hypot(nx, ny) || 1;
+  nx /= len; ny /= len;
+  const px = -ny, py = nx; // perpendiculaire à n, pour la largeur du demi-plan
+  const big = Math.hypot(bx1 - bx0, by1 - by0) * 2 + 1;
+
+  const halfPlane = [[[
+    [cx - px * big, cy - py * big],
+    [cx + px * big, cy + py * big],
+    [cx + px * big + nx * big, cy + py * big + ny * big],
+    [cx - px * big + nx * big, cy - py * big + ny * big],
+    [cx - px * big, cy - py * big],
+  ]]];
+
+  let farRing = chosen.ring;
+  try {
+    const clipped = polyIntersection([chosen.ring], halfPlane);
+    if (clipped.length) {
+      let best = null;
+      for (const poly of clipped) {
+        const ring = poly[0];
+        let a = 0;
+        for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+        const area = Math.abs(a) / 2;
+        if (!best || area > best.area) best = { ring, area };
+      }
+      if (best && best.area > 4) farRing = best.ring;
+    }
+  } catch {
+    // Découpage impossible (topologie dégénérée) : on garde le morceau entier tel quel.
+  }
+  const label = polylabel([farRing], 0.5);
   return { x: label[0], y: label[1] };
 }
 
@@ -747,13 +814,12 @@ function buildFactoryMarker(d) {
 }
 
 // Un marqueur = une ancre (position gérée par globe.gl/CSS2DRenderer, qui réécrit son style
-// "transform" à chaque frame — on n'y touche jamais) contenant un groupe (.poi-group) sur
-// lequel — et lui seul — s'applique l'échelle liée au zoom (--poi-scale, voir
-// updatePoiScale). Quand un territoire a À LA FOIS une ville et une usine, les deux carrés
-// sont placés côte à côte DANS CE MÊME GROUPE plutôt qu'en deux marqueurs indépendants avec
-// chacun sa propre position géographique : comme pour les ressources sous l'usine, ça
-// garantit un écart entre eux dans une proportion FIXE par rapport à leur taille à
-// n'importe quel niveau de zoom, donc jamais de chevauchement (ni d'écart disproportionné).
+// "transform" à chaque frame — on n'y touche jamais) contenant un groupe (.poi-group) qui
+// porte, lui seul, l'échelle liée au zoom (--poi-scale, voir updatePoiScale) : sur un
+// territoire qui a une usine (ses ressources sont ses ENFANTS, voir buildFactoryMarker),
+// cette échelle garantit que l'écart usine↔ressources reste dans une proportion FIXE à
+// n'importe quel niveau de zoom. Ville et usine restent volontairement deux marqueurs
+// séparés, chacun à sa propre position géographique — voir factoryAnchorFarFrom.
 function buildMarkerElement(d) {
   const anchor = document.createElement('div');
   anchor.className = 'poi-anchor';
@@ -761,7 +827,7 @@ function buildMarkerElement(d) {
   group.className = 'poi-group';
   anchor.appendChild(group);
 
-  if (d.type === 'city' || d.type === 'city+factory') {
+  if (d.type === 'city') {
     const marker = document.createElement('div');
     marker.className = 'poi-marker';
     marker.style.borderColor = markerColorForTerritoire(d.territoireId);
@@ -769,8 +835,7 @@ function buildMarkerElement(d) {
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
     group.appendChild(marker);
-  }
-  if (d.type === 'factory' || d.type === 'city+factory') {
+  } else {
     group.appendChild(buildFactoryMarker(d));
   }
   return anchor;
@@ -909,25 +974,30 @@ function loadGameData(attempt = 1) {
 
     markersData = [];
     for (const t of TERRITOIRES) {
-      const factoryData = t.slotIndustrie ? { resources: t.ressources || [] } : null;
-      if (t.ville && factoryData) {
-        // Ville ET usine : un seul marqueur groupé (voir buildMarkerElement), ancré sur la
-        // ville — plus fiable comme point de repère qu'un point calculé — pour que les deux
-        // carrés restent toujours côte à côte, jamais l'un sur l'autre ni loin l'un de l'autre.
-        markersData.push({
-          type: 'city+factory', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots,
-          lat: t.ville.lat, lon: t.ville.lon, resources: factoryData.resources,
-        });
-        continue;
-      }
       if (t.ville) {
         markersData.push({ type: 'city', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots, lat: t.ville.lat, lon: t.ville.lon });
       }
-      if (factoryData) {
-        const anchor = labelAnchorById.get(t.id);
+      if (t.slotIndustrie) {
+        // Ville ET usine sur le même territoire : l'usine n'est jamais posée à côté de la
+        // ville, mais délibérément à l'opposé (voir factoryAnchorFarFrom), pour bien les
+        // distinguer visuellement — deux informations différentes, deux endroits différents.
+        // Sans ville, l'usine garde son ancre habituelle (labelAnchorById).
+        const cityPixel = t.ville ? projection([t.ville.lon, t.ville.lat]) : null;
+        let anchor = cityPixel ? factoryAnchorFarFrom(displayGeometryById.get(t.id), cityPixel) : null;
+        // Garde-fou : le découpage par demi-plan (factoryAnchorFarFrom) part de la forme
+        // SIMPLIFIÉE (displayGeometryById) — sur un territoire fin ou très découpé, le point
+        // obtenu peut, par la marge de simplification, tomber tout juste hors de la forme
+        // RÉELLE. On revérifie contre la géométrie non simplifiée ; en cas de doute, on
+        // retombe sur l'ancre habituelle (labelAnchorById), déjà garantie à l'intérieur.
+        if (anchor) {
+          const realPixelMultiPoly = projectToPixelMultiPoly(canvasGeometryById.get(t.id));
+          const stillInside = realPixelMultiPoly.some((poly) => booleanPointInPolygon([anchor.x, anchor.y], { type: 'Polygon', coordinates: poly }));
+          if (!stillInside) anchor = null;
+        }
+        if (!anchor) anchor = labelAnchorById.get(t.id);
         if (anchor) {
           const [lon, lat] = projection.invert([anchor.x, anchor.y]);
-          markersData.push({ type: 'factory', territoireId: t.id, lat, lon, resources: factoryData.resources });
+          markersData.push({ type: 'factory', territoireId: t.id, lat, lon, resources: t.ressources || [] });
         }
       }
     }
