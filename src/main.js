@@ -735,16 +735,28 @@ function buildMarkerElement(d) {
     marker.innerHTML = CITY_ICON_SVG;
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
-  } else if (d.type === 'factory') {
+  } else {
     marker.style.borderColor = markerColorForTerritoire(d.territoireId);
     marker.innerHTML = FACTORY_ICON_SVG;
     marker.classList.add('poi-marker--factory');
-  } else {
-    // ressource : liseré neutre fixe (ce n'est pas un attribut du joueur, mais du
-    // territoire — il ne change pas selon qui possède l'usine).
-    marker.classList.add('poi-marker--resource');
-    marker.innerHTML = RESOURCE_ICON_SVG[d.resourceType] || '';
-    marker.title = d.resourceType;
+    // Les cercles de ressource sont des ENFANTS du carré usine (pas des marqueurs séparés
+    // avec leur propre position géographique) : ainsi ils héritent automatiquement de la
+    // même transformation CSS (--poi-scale) que l'usine, et leur position (juste en dessous,
+    // en ligne) reste dans une proportion FIXE par rapport à sa taille à n'importe quel
+    // niveau de zoom — impossible qu'ils se chevauchent entre eux ou avec l'usine, ou au
+    // contraire s'écartent trop, puisqu'ils grossissent et s'écartent exactement ensemble.
+    if (d.resources && d.resources.length) {
+      const row = document.createElement('div');
+      row.className = 'poi-resource-row';
+      for (const r of d.resources) {
+        const icon = document.createElement('div');
+        icon.className = 'poi-resource-icon';
+        icon.innerHTML = RESOURCE_ICON_SVG[resourceTypeOf(r)] || '';
+        icon.title = resourceTypeOf(r);
+        row.appendChild(icon);
+      }
+      marker.appendChild(row);
+    }
   }
   return anchor;
 }
@@ -761,10 +773,6 @@ const POI_ALT_HIDDEN = 2.2;
 const POI_ALT_FULL = 0.45;
 const POI_ALT_CLOSE = 0.12;
 const POI_MIN_SCALE = 0.6;
-
-// Décalage (en degrés) des cercles de ressource sous leur usine — voir loadGameData.
-const RESOURCE_LAT_OFFSET = 1;
-const RESOURCE_LON_SPACING = 1.2;
 const POI_MAX_SCALE = 4;
 function updatePoiScale({ altitude }) {
   let scale;
@@ -892,26 +900,10 @@ function loadGameData(attempt = 1) {
       const anchor = labelAnchorById.get(t.id);
       if (t.slotIndustrie && anchor) {
         const [lon, lat] = projection.invert([anchor.x, anchor.y]);
-        markersData.push({ type: 'factory', territoireId: t.id, lat, lon });
-        // Une usine produit une des ressources du territoire (au choix du joueur, à chaque
-        // tour) : on affiche donc un petit cercle par ressource juste sous l'usine, en ligne,
-        // centré sur elle. L'écart en longitude est compensé par cos(latitude) — sans ça, les
-        // cercles se retrouveraient bien plus écartés à l'équateur que près des pôles, où les
-        // degrés de longitude représentent une distance à l'écran beaucoup plus petite.
-        const resources = t.ressources || [];
-        if (resources.length) {
-          const lonSpacing = Math.min(6, RESOURCE_LON_SPACING / Math.max(0.15, Math.cos((lat * Math.PI) / 180)));
-          resources.forEach((r, i) => {
-            const offset = (i - (resources.length - 1) / 2) * lonSpacing;
-            markersData.push({
-              type: 'resource',
-              resourceType: resourceTypeOf(r),
-              territoireId: t.id,
-              lat: lat - RESOURCE_LAT_OFFSET,
-              lon: lon + offset,
-            });
-          });
-        }
+        // Les ressources sont portées par le marqueur usine lui-même (voir buildMarkerElement) :
+        // un cercle par ressource, affiché juste en dessous, en ligne — pas des marqueurs
+        // séparés avec leur propre position géographique.
+        markersData.push({ type: 'factory', territoireId: t.id, lat, lon, resources: t.ressources || [] });
       }
     }
     world.htmlElementsData(markersData);

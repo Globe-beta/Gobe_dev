@@ -130,6 +130,7 @@ html, body {
    porte tout le style visuel, y compris l'échelle liée au zoom (--poi-scale). */
 .poi-anchor { width: 28px; height: 28px; }
 .poi-marker {
+  position: relative;
   width: 100%;
   height: 100%;
   display: flex;
@@ -146,12 +147,34 @@ html, body {
 }
 .poi-marker svg { width: 60%; height: 60%; display: block; }
 .poi-marker--factory { cursor: default; pointer-events: none; }
-.poi-marker--resource {
-  border-radius: 50%;
-  border-color: #8a8f9c;
-  cursor: default;
-  pointer-events: none;
+
+/* Rangée de cercles de ressource, ENFANT du carré usine (voir buildMarkerElement) : elle
+   hérite donc de sa transformation "scale" (--poi-scale) au lieu d'en porter une à elle, ce
+   qui garantit que l'écart usine↔ressources et ressource↔ressource (fixes ici, en pixels,
+   AVANT tout scale) reste dans une proportion constante par rapport à leur taille à n'importe
+   quel niveau de zoom — jamais de chevauchement, ni au contraire d'écart disproportionné. */
+.poi-resource-row {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
 }
+.poi-resource-icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid #8a8f9c;
+  box-shadow: 0 0 6px rgba(0,0,0,0.6);
+}
+.poi-resource-icon svg { width: 60%; height: 60%; display: block; }
 
 .tooltip {
   font: 13px/1.5 system-ui, sans-serif;
