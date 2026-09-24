@@ -19,12 +19,9 @@ const MARKER_NEUTRAL = '#8a8f9c'; // liseré des marqueurs ville/usine non attri
 
 // Cases maritimes : contrairement à la terre (déjà visible via la texture satellite en
 // dessous), une case maritime sans teinte propre serait un simple contour invisible sur fond
-// d'océan. On lui donne une teinte permanente (peinte une fois, dans drawBaseCanvas, jamais
-// effacée par redrawLive qui ne repeint que par-dessus) — bleutée pour une case jouable,
-// grisée pour une case verrouillée (Arctique, avant technologie tardive).
+// d'océan. On lui donne une teinte bleutée permanente (peinte une fois, dans drawBaseCanvas,
+// jamais effacée par redrawLive qui ne repeint que par-dessus).
 const MARITIME_FILL = 'rgba(64, 176, 230, 0.28)';
-const MARITIME_LOCKED_FILL = 'rgba(140, 145, 155, 0.35)';
-const CHOKEPOINT_BORDER = '#ffd23f';
 
 // Symboles des marqueurs ville/usine — mêmes silhouettes partout (sur le globe ET dans la
 // légende), pour que la légende corresponde exactement à ce qu'on voit sur la carte. Formes
@@ -221,9 +218,10 @@ function computeDisplayGeometry() {
   for (const region of REGIONS) {
     const ids = territoiresParRegion[region] || [];
     if (!ids.length) continue;
+    const isMaritimeRegion = TERRITOIRE_PAR_ID[ids[0]].type === 'maritime';
     const pixelMPs = new Map(ids.map((id) => {
       let mp = simplifyPixelMultiPoly(projectToPixelMultiPoly(canvasGeometryById.get(id)));
-      if (TERRITOIRE_PAR_ID[id].type === 'maritime') mp = subtractLandFrom(mp);
+      if (isMaritimeRegion) mp = subtractLandFrom(mp);
       return [id, mp];
     }));
 
@@ -232,7 +230,17 @@ function computeDisplayGeometry() {
       continue;
     }
 
-    const regionOuter = polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
+    // Pour une région maritime (toutes les cases de mer sont dans la même région "Océans" —
+    // voir data/territoires.js — afin que N'IMPORTE QUELLE paire se partage par une droite),
+    // chaque case a déjà sa propre forme "vraie" (candidate moins la terre, ci-dessus) : pas
+    // besoin d'unir les 8 en une seule forme géante avant de découper, contrairement à une
+    // région terrestre composite où seule l'UNION porte le vrai contour extérieur. Unir ~8
+    // formes déjà complexes (des centaines de morceaux au total, une par côte croisée) est
+    // coûteux et s'est révélé numériquement peu fiable (une case gardait par endroits son
+    // rectangle brut, non découpé, sans qu'aucune erreur ne soit levée) pour un résultat
+    // strictement identique à intersecter séparément chaque cellule de Voronoï avec la forme
+    // de SA PROPRE case.
+    const regionOuter = isMaritimeRegion ? null : polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
 
     const sites = ids.map((id) => {
       const ville = TERRITOIRE_PAR_ID[id]?.ville;
@@ -240,11 +248,10 @@ function computeDisplayGeometry() {
       return anchorOfPixelMultiPoly(pixelMPs.get(id), preferredPoint);
     });
     let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-    for (const poly of regionOuter) {
-      for (const [x, y] of poly[0]) {
-        bx0 = Math.min(bx0, x); by0 = Math.min(by0, y);
-        bx1 = Math.max(bx1, x); by1 = Math.max(by1, y);
-      }
+    for (const mp of pixelMPs.values()) {
+      const [x0, y0, x1, y1] = bboxOfPixelMultiPoly(mp);
+      bx0 = Math.min(bx0, x0); by0 = Math.min(by0, y0);
+      bx1 = Math.max(bx1, x1); by1 = Math.max(by1, y1);
     }
     // Bornes du diagramme de Voronoï largement plus grandes que la région elle-même : sinon
     // les cellules seraient tronquées par les bornes avant même d'être découpées par le vrai
@@ -256,8 +263,14 @@ function computeDisplayGeometry() {
     for (let i = 0; i < ids.length; i++) {
       const cell = voronoi.cellPolygon(i);
       if (!cell) continue;
-      const clipped = polyIntersection([cell], regionOuter);
-      if (clipped.length) displayGeometryById.set(ids[i], clipped);
+      try {
+        const clipped = polyIntersection([cell], isMaritimeRegion ? pixelMPs.get(ids[i]) : regionOuter);
+        if (clipped.length) displayGeometryById.set(ids[i], clipped);
+      } catch {
+        // Topologie dégénérée : garde la forme déjà soustraite de la terre (non partagée avec
+        // ses voisines) plutôt que de perdre la case entièrement.
+        if (isMaritimeRegion) displayGeometryById.set(ids[i], pixelMPs.get(ids[i]));
+      }
     }
   }
 }
@@ -533,13 +546,13 @@ function drawBaseCanvas() {
   baseCtx = baseCanvas.getContext('2d');
   baseCtx.drawImage(earthImg, 0, 0, TEX_W, TEX_H);
 
-  // Teinte permanente des cases maritimes (voir MARITIME_FILL/MARITIME_LOCKED_FILL) : avant
-  // les frontières, pour qu'elles restent tracées nettement par-dessus.
+  // Teinte permanente des cases maritimes (voir MARITIME_FILL) : avant les frontières, pour
+  // qu'elles restent tracées nettement par-dessus.
   for (const t of TERRITOIRES) {
     if (t.type !== 'maritime') continue;
     const mp = displayGeometryById.get(t.id);
     if (!mp) continue;
-    baseCtx.fillStyle = t.accessible === false ? MARITIME_LOCKED_FILL : MARITIME_FILL;
+    baseCtx.fillStyle = MARITIME_FILL;
     baseCtx.beginPath();
     drawPixelPath(baseCtx, mp);
     baseCtx.fill('evenodd');
@@ -559,22 +572,6 @@ function drawBaseCanvas() {
   // les frontières de territoire — jamais les frontières internes entre deux territoires
   // d'une même région (voir computeRegionBorderOverlay).
   if (regionBorderOverlay) baseCtx.drawImage(regionBorderOverlay, 0, 0);
-
-  // Liseré pointillé doré des chokepoints (Détroit d'Ormuz, Canal de Suez) : par-dessus tout
-  // le reste, pour rester repérable quelle que soit la région/couleur de fond.
-  baseCtx.save();
-  baseCtx.strokeStyle = CHOKEPOINT_BORDER;
-  baseCtx.lineWidth = TEX_W * 0.0016;
-  baseCtx.setLineDash([TEX_W * 0.004, TEX_W * 0.003]);
-  for (const t of TERRITOIRES) {
-    if (!t.chokepoint) continue;
-    const mp = displayGeometryById.get(t.id);
-    if (!mp) continue;
-    baseCtx.beginPath();
-    drawPixelPath(baseCtx, mp);
-    baseCtx.stroke();
-  }
-  baseCtx.restore();
 
   liveCanvas = document.createElement('canvas');
   liveCanvas.width = TEX_W;
@@ -758,7 +755,7 @@ app.appendChild(regionLegendBar);
 const legend = document.createElement('div');
 legend.className = 'legend';
 legend.innerHTML = `
-  <div><b>47 territoires</b> + <b>8 cases maritimes</b> · 25 régions · 18 villes</div>
+  <div><b>47 territoires</b> + <b>8 cases maritimes</b> · 23 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
@@ -767,8 +764,6 @@ legend.innerHTML = `
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Énergie']}</span> Énergie</div>
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Terres rares']}</span> Terres rares</div>
   <div class="row"><span class="sq" style="border-radius:3px;background:#2f8fc7"></span> case maritime</div>
-  <div class="row"><span class="sq" style="border-radius:3px;background:#8c919b"></span> case verrouillée (technologie tardive requise)</div>
-  <div class="row"><span class="sq" style="border-radius:3px;background:transparent;border:2px dashed ${CHOKEPOINT_BORDER}"></span> chokepoint</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
   <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
 `;
@@ -813,11 +808,6 @@ function clearSelection() {
 
 invadeBtn.onclick = () => {
   if (!selectedId) return;
-  const t = TERRITOIRE_PAR_ID[selectedId];
-  if (t && t.accessible === false) {
-    showToast(`${t.nom} : verrouillé — nécessite une technologie tardive (fonte des glaces)`);
-    return;
-  }
   assignTerritoire(selectedId);
   selectedId = null;
   renderAll();
@@ -993,8 +983,7 @@ function renderAll() {
 
   if (selectedId) {
     const t = TERRITOIRE_PAR_ID[selectedId];
-    const suffix = t && t.accessible === false ? ' 🔒 verrouillé' : '';
-    invadeLabel.textContent = `${t ? t.nom : selectedId}${suffix} → ${PLAYERS[activePlayer].name} ?`;
+    invadeLabel.textContent = `${t ? t.nom : selectedId} → ${PLAYERS[activePlayer].name} ?`;
     invadeBar.classList.add('show');
   } else {
     invadeBar.classList.remove('show');

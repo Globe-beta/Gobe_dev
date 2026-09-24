@@ -337,24 +337,48 @@ for (const [territoireId, feats] of Object.entries(byTerritoire)) {
 }
 
 // ---- 3.5 Cases maritimes ----
-// Pas de source Natural Earth pour la mer : rectangles lon/lat dessinés à la main, juste assez
-// fidèles pour des cases de jeu (jamais une référence géographique précise). "Passage central
-// arctique" couvre presque toute la largeur de la carte (-179.9° à 179.9°, jamais exactement
-// ±180°, pour ne pas tomber pile sur l'antiméridien que d3-geo utilise pour découper les
-// géométries qui le traversent).
+// Pas de source Natural Earth pour la mer : une partition grossière des océans du monde en
+// rectangles lon/lat dessinés à la main (jamais une référence géographique précise — juste une
+// zone candidate). Leur forme définitive est calculée au chargement (main.js,
+// computeDisplayGeometry) : la terre qui les recouvre en est retirée (le bord qui touche une
+// côte suit alors cette côte réelle), puis elles se partagent entre elles par des droites
+// (Voronoï), toutes dans la même région de jeu ("Océans" — voir data/territoires.js) pour que
+// CE partage s'applique entre n'importe quelle paire de cases, pas seulement des voisines
+// nommées ensemble.
+//
+// Chaque valeur est une LISTE d'anneaux (pas un seul) : le Pacifique Nord/Sud a besoin de deux
+// rectangles simples (Asie→180° et -180°→Amériques) plutôt qu'un seul traversant
+// l'antiméridien — un rectangle qui franchit pile ±180° est un cas limite pour le découpage
+// antiméridien de d3-geo (utilisé plus tard, dans main.js) ; deux rectangles qui s'arrêtent
+// juste avant (179.9°/-179.9°) l'évitent complètement.
 const MARITIME_BOXES = {
-  'mar-ormuz': [[54, 24.5], [58, 24.5], [58, 27], [54, 27]],
-  'mar-indienouest': [[45, -15], [70, -15], [70, 10], [45, 10]],
-  'mar-indienest': [[75, -15], [100, -15], [100, 10], [75, 10]],
-  'mar-arctiquenordam': [[-140, 75], [-60, 75], [-60, 84], [-140, 84]],
-  'mar-arctiquerusse': [[30, 76], [178, 76], [178, 84], [30, 84]],
-  'mar-arctiquecentral': [[-179.9, 84], [179.9, 84], [179.9, 90], [-179.9, 90]],
-  'mar-medoccidentale': [[-5, 33], [15, 33], [15, 43], [-5, 43]],
-  'mar-suez': [[31.5, 27], [34.5, 27], [34.5, 32], [31.5, 32]],
+  'mer-arctique': [[[-179.9, 66], [179.9, 66], [179.9, 90], [-179.9, 90]]],
+  'mer-atlantiquenord': [[[-80, 0], [0, 0], [0, 66], [-80, 66]]],
+  'mer-atlantiquesud': [[[-70, -60], [20, -60], [20, 0], [-70, 0]]],
+  // Les deux morceaux se touchent exactement à ±180° (contrairement à "mer-arctique" ci-dessus,
+  // qui reste un anneau UNIQUE traversant toute la largeur — là, la marge de 0.1° évite qu'il
+  // tombe pile sur l'antiméridien que d3-geo utilise pour détecter un contour qui le
+  // TRAVERSE). Ici, deux anneaux déjà séparés qui s'arrêtent chacun pile à ±180° ne traversent
+  // rien : aucun risque de déclencher ce découpage, et ça évite un accolement imparfait
+  // (0.2° d'écart) qui se serait vu comme un mince liseré de couleur de région à la couture.
+  'mer-pacifiquenord': [
+    [[120, 0], [180, 0], [180, 66], [120, 66]],
+    [[-180, 0], [-100, 0], [-100, 66], [-180, 66]],
+  ],
+  'mer-pacifiquesud': [
+    [[120, -60], [180, -60], [180, 0], [120, 0]],
+    [[-180, -60], [-70, -60], [-70, 0], [-180, 0]],
+  ],
+  'mer-indien': [[[20, -60], [120, -60], [120, 30], [20, 30]]],
+  'mer-mediterranee': [[[-6, 30], [36, 30], [36, 46], [-6, 46]]],
+  'mer-caraibes': [[[-98, 7], [-55, 7], [-55, 31], [-98, 31]]],
 };
-for (const [territoireId, box] of Object.entries(MARITIME_BOXES)) {
-  const ring = [...box, box[0]];
-  merged.push({ type: 'Feature', properties: { territoireId }, geometry: { type: 'Polygon', coordinates: [ring] } });
+for (const [territoireId, rings] of Object.entries(MARITIME_BOXES)) {
+  const closedRings = rings.map((ring) => [...ring, ring[0]]);
+  const geometry = closedRings.length === 1
+    ? { type: 'Polygon', coordinates: [closedRings[0]] }
+    : { type: 'MultiPolygon', coordinates: closedRings.map((ring) => [ring]) };
+  merged.push({ type: 'Feature', properties: { territoireId }, geometry });
 }
 
 // ---- 4. Nettoyage et simplification, île par île ----
