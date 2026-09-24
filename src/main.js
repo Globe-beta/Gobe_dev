@@ -187,6 +187,22 @@ function bboxesOverlap(a, b) {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
+// Forme terrestre SANS aucun trou : chaque territoire est simplifié séparément (voir
+// simplifyPixelMultiPoly), ce qui ouvre de minuscules fentes le long de ses frontières avec
+// ses voisins, et les données sources en contiennent déjà quelques-unes entre subdivisions
+// assemblées (Chine du Nord, Russie…). Gardées telles quelles, ces fentes devenaient des
+// "trous" dans la région, que computeRegionBorderOverlay cerclait de la couleur de la région
+// (et que le trait noir des territoires soulignait d'un point) en plein milieu des terres.
+// Aucun territoire terrestre du jeu n'en enclave un autre : on remplit donc tous les trous.
+// On fusionne d'abord (polyUnion) : projectToPixelMultiPoly rend chaque anneau source, trous
+// compris, comme un polygone à part, qui se retrouve ainsi absorbé par le contour qui le
+// contient au lieu de s'y superposer.
+function withoutHoles(mp) {
+  let merged = mp;
+  try { merged = polyUnion(mp); } catch { /* topologie dégénérée : on garde les anneaux tels quels */ }
+  return merged.map((poly) => [poly[0]]);
+}
+
 function computeDisplayGeometry() {
   // Cases maritimes : leur tracé dessiné à la main (voir scripts/build-geo.mjs) n'est qu'une
   // zone candidate — sur le bord qui touche une côte, on veut suivre cette côte RÉELLE (comme
@@ -208,7 +224,11 @@ function computeDisplayGeometry() {
     const overlapping = landPixelMPsWithBbox.filter((l) => bboxesOverlap(bbox, l.bbox)).map((l) => l.mp);
     if (!overlapping.length) return mp;
     try {
-      const diff = polyDifference(mp, ...overlapping);
+      // Terre fusionnée PUIS débarrassée de ses trous (withoutHoles) : les fentes entre deux
+      // territoires voisins (voir withoutHoles) ne doivent pas rester, dans la case, comme de
+      // petits éclats de "mer" en plein milieu des terres.
+      const land = withoutHoles(polyUnion(...overlapping));
+      const diff = polyDifference(mp, land);
       return diff.length ? diff : mp;
     } catch {
       return mp; // topologie dégénérée : on garde la case telle quelle plutôt que de la perdre
@@ -225,7 +245,11 @@ function computeDisplayGeometry() {
       return [id, mp];
     }));
 
-    if (ids.length === 1 || isMaritimeRegion) {
+    if (!isMaritimeRegion && ids.length === 1) {
+      displayGeometryById.set(ids[0], withoutHoles(pixelMPs.get(ids[0])));
+      continue;
+    }
+    if (isMaritimeRegion) {
       // Une région maritime (un "grand ensemble" océan/mer) est directement subdivisée à la
       // main (scripts/build-geo.mjs) en cases mer rectangulaires DÉJÀ disjointes, qui se
       // touchent pile à leur frontière commune (ex. -40° pour "Atlantique Nord") : pas besoin
@@ -236,7 +260,7 @@ function computeDisplayGeometry() {
       continue;
     }
 
-    const regionOuter = polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
+    const regionOuter = withoutHoles(polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id))));
 
     const sites = ids.map((id) => {
       const ville = TERRITOIRE_PAR_ID[id]?.ville;
