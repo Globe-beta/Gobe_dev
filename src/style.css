@@ -73,22 +73,40 @@ html, body {
 }
 .btn:active { transform: scale(0.96); }
 
+/* Menu déroulant (<details>) : replié, seul le bouton "Régions" s'affiche (petite pastille à
+   gauche) ; déplié, il s'étire sur toute la largeur pour la liste. */
 .region-legend {
   position: fixed;
   top: 90px;
   left: 8px;
-  right: 8px;
   z-index: 9997;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 11px;
   color: var(--text-dim);
-  max-height: 30vh;
+}
+/* Déplié, fond opaque : sur téléphone il recouvre la grande légende en bas, qui sinon se lirait
+   au travers du fond semi-transparent habituel des panneaux. */
+.region-legend[open] { right: 8px; background: #0f121c; }
+.region-legend summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+  padding: 2px 0;
+}
+.region-legend summary::-webkit-details-marker { display: none; }
+.region-legend summary::before { content: '▸ '; }
+.region-legend[open] summary::before { content: '▾ '; }
+.region-legend-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  max-height: 45vh;
   overflow-y: auto;
 }
 .region-legend .item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }

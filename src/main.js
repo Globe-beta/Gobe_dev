@@ -779,15 +779,27 @@ resetBtn.onclick = () => {
 };
 topbar.appendChild(resetBtn);
 
-// Bandeau pleine largeur listant les 22 régions et leur couleur de frontière (voir
-// computeRegionBorderOverlay), pour pouvoir associer chaque couleur vue sur le globe à son
-// nom de région.
-const regionLegendBar = document.createElement('div');
+// Liste des régions et de leur couleur de frontière (voir computeRegionBorderOverlay), pour
+// associer chaque couleur vue sur le globe à son nom de région. Menu déroulant (<details>) :
+// sur téléphone, la liste dépliée masquait une bonne partie du globe — elle y démarre donc
+// repliée, et reste dépliée par défaut sur grand écran où elle ne gêne pas.
+const regionLegendBar = document.createElement('details');
 regionLegendBar.className = 'region-legend';
-regionLegendBar.innerHTML = REGIONS.map((region) => `
-  <span class="item"><span class="sq" style="background:${regionColor.get(region)}"></span>${region}</span>
-`).join('');
+regionLegendBar.open = window.matchMedia('(min-width: 700px)').matches;
+regionLegendBar.innerHTML = `
+  <summary>Régions (${REGIONS.length})</summary>
+  <div class="region-legend-list">${REGIONS.map((region) => `
+    <span class="item"><span class="sq" style="background:${regionColor.get(region)}"></span>${region}</span>
+  `).join('')}</div>
+`;
 app.appendChild(regionLegendBar);
+
+// Sur écran étroit, le bandeau jaune de statut passe sur deux lignes : on place le menu des
+// régions juste sous sa hauteur RÉELLE plutôt qu'à une position fixe qui le ferait chevaucher.
+function placeRegionLegend() {
+  regionLegendBar.style.top = `${Math.round(statusEl.getBoundingClientRect().bottom) + 6}px`;
+}
+placeRegionLegend();
 
 const legend = document.createElement('div');
 legend.className = 'legend';
@@ -1033,6 +1045,7 @@ function renderAll() {
     const owned = Object.keys(ownership);
     statusEl.textContent = `${readyStatusBase} · clic:${lastClickInfo} · attribués(${owned.length}):${owned.join(',') || '—'}`;
   }
+  placeRegionLegend();
 }
 let readyStatusBase = '';
 
@@ -1167,4 +1180,5 @@ loadGameData();
 
 window.addEventListener('resize', () => {
   world.width(window.innerWidth).height(window.innerHeight);
+  placeRegionLegend();
 });
