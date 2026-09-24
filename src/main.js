@@ -720,43 +720,58 @@ glCanvas.addEventListener('webglcontextrestored', () => {
 
 let markersData = [];
 
+function buildFactoryMarker(d) {
+  const marker = document.createElement('div');
+  marker.className = 'poi-marker poi-marker--factory';
+  marker.style.borderColor = markerColorForTerritoire(d.territoireId);
+  marker.innerHTML = FACTORY_ICON_SVG;
+  // Les cercles de ressource sont des ENFANTS du carré usine (pas des marqueurs séparés avec
+  // leur propre position géographique) : ils héritent ainsi de la même transformation CSS
+  // (--poi-scale, appliquée une seule fois sur .poi-group, voir buildMarkerElement) que le
+  // reste du marqueur, et leur position (juste en dessous, en ligne) reste dans une
+  // proportion FIXE par rapport à sa taille à n'importe quel niveau de zoom — impossible
+  // qu'ils se chevauchent entre eux ou avec l'usine, ou au contraire s'écartent trop.
+  if (d.resources && d.resources.length) {
+    const row = document.createElement('div');
+    row.className = 'poi-resource-row';
+    for (const r of d.resources) {
+      const icon = document.createElement('div');
+      icon.className = 'poi-resource-icon';
+      icon.innerHTML = RESOURCE_ICON_SVG[resourceTypeOf(r)] || '';
+      icon.title = resourceTypeOf(r);
+      row.appendChild(icon);
+    }
+    marker.appendChild(row);
+  }
+  return marker;
+}
+
 // Un marqueur = une ancre (position gérée par globe.gl/CSS2DRenderer, qui réécrit son style
-// "transform" à chaque frame — on n'y touche jamais) contenant un carré visuel séparé
-// (.poi-marker) : c'est SUR ce carré, jamais sur l'ancre, qu'on applique l'échelle liée au
-// zoom (voir updatePoiScale), sans quoi elle serait écrasée en permanence par globe.gl.
+// "transform" à chaque frame — on n'y touche jamais) contenant un groupe (.poi-group) sur
+// lequel — et lui seul — s'applique l'échelle liée au zoom (--poi-scale, voir
+// updatePoiScale). Quand un territoire a À LA FOIS une ville et une usine, les deux carrés
+// sont placés côte à côte DANS CE MÊME GROUPE plutôt qu'en deux marqueurs indépendants avec
+// chacun sa propre position géographique : comme pour les ressources sous l'usine, ça
+// garantit un écart entre eux dans une proportion FIXE par rapport à leur taille à
+// n'importe quel niveau de zoom, donc jamais de chevauchement (ni d'écart disproportionné).
 function buildMarkerElement(d) {
   const anchor = document.createElement('div');
   anchor.className = 'poi-anchor';
-  const marker = document.createElement('div');
-  marker.className = 'poi-marker';
-  anchor.appendChild(marker);
-  if (d.type === 'city') {
+  const group = document.createElement('div');
+  group.className = 'poi-group';
+  anchor.appendChild(group);
+
+  if (d.type === 'city' || d.type === 'city+factory') {
+    const marker = document.createElement('div');
+    marker.className = 'poi-marker';
     marker.style.borderColor = markerColorForTerritoire(d.territoireId);
     marker.innerHTML = CITY_ICON_SVG;
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
-  } else {
-    marker.style.borderColor = markerColorForTerritoire(d.territoireId);
-    marker.innerHTML = FACTORY_ICON_SVG;
-    marker.classList.add('poi-marker--factory');
-    // Les cercles de ressource sont des ENFANTS du carré usine (pas des marqueurs séparés
-    // avec leur propre position géographique) : ainsi ils héritent automatiquement de la
-    // même transformation CSS (--poi-scale) que l'usine, et leur position (juste en dessous,
-    // en ligne) reste dans une proportion FIXE par rapport à sa taille à n'importe quel
-    // niveau de zoom — impossible qu'ils se chevauchent entre eux ou avec l'usine, ou au
-    // contraire s'écartent trop, puisqu'ils grossissent et s'écartent exactement ensemble.
-    if (d.resources && d.resources.length) {
-      const row = document.createElement('div');
-      row.className = 'poi-resource-row';
-      for (const r of d.resources) {
-        const icon = document.createElement('div');
-        icon.className = 'poi-resource-icon';
-        icon.innerHTML = RESOURCE_ICON_SVG[resourceTypeOf(r)] || '';
-        icon.title = resourceTypeOf(r);
-        row.appendChild(icon);
-      }
-      marker.appendChild(row);
-    }
+    group.appendChild(marker);
+  }
+  if (d.type === 'factory' || d.type === 'city+factory') {
+    group.appendChild(buildFactoryMarker(d));
   }
   return anchor;
 }
@@ -894,16 +909,26 @@ function loadGameData(attempt = 1) {
 
     markersData = [];
     for (const t of TERRITOIRES) {
+      const factoryData = t.slotIndustrie ? { resources: t.ressources || [] } : null;
+      if (t.ville && factoryData) {
+        // Ville ET usine : un seul marqueur groupé (voir buildMarkerElement), ancré sur la
+        // ville — plus fiable comme point de repère qu'un point calculé — pour que les deux
+        // carrés restent toujours côte à côte, jamais l'un sur l'autre ni loin l'un de l'autre.
+        markersData.push({
+          type: 'city+factory', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots,
+          lat: t.ville.lat, lon: t.ville.lon, resources: factoryData.resources,
+        });
+        continue;
+      }
       if (t.ville) {
         markersData.push({ type: 'city', territoireId: t.id, nom: t.ville.nom, slots: t.ville.slots, lat: t.ville.lat, lon: t.ville.lon });
       }
-      const anchor = labelAnchorById.get(t.id);
-      if (t.slotIndustrie && anchor) {
-        const [lon, lat] = projection.invert([anchor.x, anchor.y]);
-        // Les ressources sont portées par le marqueur usine lui-même (voir buildMarkerElement) :
-        // un cercle par ressource, affiché juste en dessous, en ligne — pas des marqueurs
-        // séparés avec leur propre position géographique.
-        markersData.push({ type: 'factory', territoireId: t.id, lat, lon, resources: t.ressources || [] });
+      if (factoryData) {
+        const anchor = labelAnchorById.get(t.id);
+        if (anchor) {
+          const [lon, lat] = projection.invert([anchor.x, anchor.y]);
+          markersData.push({ type: 'factory', territoireId: t.id, lat, lon, resources: factoryData.resources });
+        }
       }
     }
     world.htmlElementsData(markersData);
