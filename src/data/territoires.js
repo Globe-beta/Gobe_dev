@@ -63,19 +63,36 @@ export const TERRITOIRES = [
   { id: 'oc-australiecotiere', bloc: 'Asie-Pacifique', region: 'Océanie', nom: 'Australie côtière', ressources: [{ type: 'Terres rares', niveau: 3 }], enclavement: 0, slotIndustrie: 0, ville: { nom: 'Sydney', slots: 1, lat: -33.8688, lon: 151.2093 } },
   { id: 'oc-outbackpacifique', bloc: 'Asie-Pacifique', region: 'Océanie', nom: 'Outback/Pacifique', ressources: ['Minerais', 'Énergie'], enclavement: 2, slotIndustrie: 1, ville: null },
 
-  // --- Maritime : cases de mer, partition des océans du monde (contours dessinés à la main,
-  // pas de source Natural Earth — voir scripts/build-geo.mjs). Toutes dans une seule région
-  // ("Océans") : computeDisplayGeometry (main.js) les partage alors entre elles par des droites
-  // (Voronoï), tandis que leur bord qui touche une côte suit cette côte réelle (la terre est
-  // soustraite de chaque case avant ce partage). Pas de ville ni d'usine. ---
-  { id: 'mer-arctique', bloc: 'Maritime', region: 'Océans', nom: 'Arctique', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-atlantiquenord', bloc: 'Maritime', region: 'Océans', nom: 'Atlantique Nord', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-atlantiquesud', bloc: 'Maritime', region: 'Océans', nom: 'Atlantique Sud', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-pacifiquenord', bloc: 'Maritime', region: 'Océans', nom: 'Pacifique Nord', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-pacifiquesud', bloc: 'Maritime', region: 'Océans', nom: 'Pacifique Sud', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-indien', bloc: 'Maritime', region: 'Océans', nom: 'Océan Indien', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-mediterranee', bloc: 'Maritime', region: 'Océans', nom: 'Méditerranée', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-caraibes', bloc: 'Maritime', region: 'Océans', nom: 'Mer des Caraïbes', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  // --- Maritime : mêmes hiérarchie et mécanique que la terre (bloc > région > territoire) —
+  // un "grand ensemble" (océan/mer) est une région de jeu, subdivisée en cases mer simples,
+  // rectangulaires, chacune avec son propre nom (contours dessinés à la main, pas de source
+  // Natural Earth — voir scripts/build-geo.mjs). Deux cases voisines d'un même ensemble sont
+  // déjà des rectangles disjoints qui se touchent pile à leur frontière commune : pas besoin de
+  // partage géométrique (Voronoï) entre elles, juste soustraire la terre qui les recouvre
+  // (main.js) pour que leur bord côtier suive la vraie côte. Pas de ville ni d'usine. ---
+  { id: 'mer-arctique-ouest', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-arctique-est', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-atlantiquenord-ouest', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantiquenord-est', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-atlantiquesud-ouest', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique Sud-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantiquesud-est', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique Sud-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-pacifiquenord-ouest', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Pacifique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-pacifiquenord-est', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Pacifique Nord-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-pacifiquesud-ouest', bloc: 'Maritime', region: 'Pacifique Sud', nom: 'Pacifique Sud-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-pacifiquesud-est', bloc: 'Maritime', region: 'Pacifique Sud', nom: 'Pacifique Sud-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-indien-ouest', bloc: 'Maritime', region: 'Océan Indien', nom: 'Océan Indien occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-indien-est', bloc: 'Maritime', region: 'Océan Indien', nom: 'Océan Indien oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-mediterranee-ouest', bloc: 'Maritime', region: 'Méditerranée', nom: 'Méditerranée occidentale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-mediterranee-est', bloc: 'Maritime', region: 'Méditerranée', nom: 'Méditerranée orientale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+
+  { id: 'mer-caraibes-ouest', bloc: 'Maritime', region: 'Mer des Caraïbes', nom: 'Mer des Caraïbes occidentale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-caraibes-est', bloc: 'Maritime', region: 'Mer des Caraïbes', nom: 'Mer des Caraïbes orientale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 ];
 
 export const TERRITOIRE_PAR_ID = Object.fromEntries(TERRITOIRES.map(t => [t.id, t]));

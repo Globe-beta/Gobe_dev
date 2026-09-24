@@ -225,22 +225,18 @@ function computeDisplayGeometry() {
       return [id, mp];
     }));
 
-    if (ids.length === 1) {
-      displayGeometryById.set(ids[0], pixelMPs.get(ids[0]));
+    if (ids.length === 1 || isMaritimeRegion) {
+      // Une région maritime (un "grand ensemble" océan/mer) est directement subdivisée à la
+      // main (scripts/build-geo.mjs) en cases mer rectangulaires DÉJÀ disjointes, qui se
+      // touchent pile à leur frontière commune (ex. -40° pour "Atlantique Nord") : pas besoin
+      // de les partager géométriquement (Voronoï) entre elles comme pour une région terrestre
+      // composite (dont les territoires réels, eux, se chevauchent/s'articulent de façon
+      // irrégulière) — chacune garde simplement sa propre forme (candidate moins la terre).
+      for (const id of ids) displayGeometryById.set(id, pixelMPs.get(id));
       continue;
     }
 
-    // Pour une région maritime (toutes les cases de mer sont dans la même région "Océans" —
-    // voir data/territoires.js — afin que N'IMPORTE QUELLE paire se partage par une droite),
-    // chaque case a déjà sa propre forme "vraie" (candidate moins la terre, ci-dessus) : pas
-    // besoin d'unir les 8 en une seule forme géante avant de découper, contrairement à une
-    // région terrestre composite où seule l'UNION porte le vrai contour extérieur. Unir ~8
-    // formes déjà complexes (des centaines de morceaux au total, une par côte croisée) est
-    // coûteux et s'est révélé numériquement peu fiable (une case gardait par endroits son
-    // rectangle brut, non découpé, sans qu'aucune erreur ne soit levée) pour un résultat
-    // strictement identique à intersecter séparément chaque cellule de Voronoï avec la forme
-    // de SA PROPRE case.
-    const regionOuter = isMaritimeRegion ? null : polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
+    const regionOuter = polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id)));
 
     const sites = ids.map((id) => {
       const ville = TERRITOIRE_PAR_ID[id]?.ville;
@@ -263,14 +259,8 @@ function computeDisplayGeometry() {
     for (let i = 0; i < ids.length; i++) {
       const cell = voronoi.cellPolygon(i);
       if (!cell) continue;
-      try {
-        const clipped = polyIntersection([cell], isMaritimeRegion ? pixelMPs.get(ids[i]) : regionOuter);
-        if (clipped.length) displayGeometryById.set(ids[i], clipped);
-      } catch {
-        // Topologie dégénérée : garde la forme déjà soustraite de la terre (non partagée avec
-        // ses voisines) plutôt que de perdre la case entièrement.
-        if (isMaritimeRegion) displayGeometryById.set(ids[i], pixelMPs.get(ids[i]));
-      }
+      const clipped = polyIntersection([cell], regionOuter);
+      if (clipped.length) displayGeometryById.set(ids[i], clipped);
     }
   }
 }
@@ -283,13 +273,20 @@ function hslToRgb(h, s, l) {
   return [Math.round(255 * f(0)), Math.round(255 * f(8)), Math.round(255 * f(4))];
 }
 
-// Une couleur différente par région (22 au total) pour ses frontières. Les teintes sont
-// espacées par l'angle d'or (~137.5°) plutôt que régulièrement (360/22°) : deux régions
+// Une couleur différente par région terrestre (22 au total) pour ses frontières. Les teintes
+// sont espacées par l'angle d'or (~137.5°) plutôt que régulièrement (360/22°) : deux régions
 // consécutives dans la liste (donc souvent voisines géographiquement, ex. les régions
 // d'Europe) reçoivent ainsi des teintes franchement différentes plutôt que deux nuances
-// proches d'une même couleur.
+// proches d'une même couleur. Les "grands ensembles" maritimes (régions dont les territoires
+// sont de type 'maritime'), eux, partagent tous la MÊME couleur bleue plutôt qu'une teinte par
+// ensemble : il ne s'agit pas de les distinguer les uns des autres, juste de marquer "mer" par
+// opposition à "terre".
 const REGIONS = [...new Set(TERRITOIRES.map((t) => t.region))];
-const regionRgb = new Map(REGIONS.map((r, i) => [r, hslToRgb((i * 137.508) % 360, 80, 55)]));
+const MARITIME_REGION_RGB = [64, 160, 235];
+const regionIsMaritime = new Map(REGIONS.map((r) => [r, TERRITOIRES.find((t) => t.region === r)?.type === 'maritime']));
+const landRegions = REGIONS.filter((r) => !regionIsMaritime.get(r));
+const landRegionRgb = new Map(landRegions.map((r, i) => [r, hslToRgb((i * 137.508) % 360, 80, 55)]));
+const regionRgb = new Map(REGIONS.map((r) => [r, regionIsMaritime.get(r) ? MARITIME_REGION_RGB : landRegionRgb.get(r)]));
 const regionColor = new Map(REGIONS.map((r) => [r, `rgb(${regionRgb.get(r).join(',')})`]));
 // Image (calculée une seule fois à la réception des données) portant uniquement les
 // frontières EXTÉRIEURES de chaque région, en couleur — voir computeRegionBorderOverlay.
@@ -317,6 +314,11 @@ function anchorOfPixelMultiPoly(multiPoly, preferredPoint) {
   let preferred = null;
   for (const poly of multiPoly) {
     const ring = poly[0]; // aire/appartenance : seul le contour extérieur compte, jamais les trous
+    // Ignore un anneau dégénéré (< 4 points, donc < 3 sommets distincts) : polylabel le refuse,
+    // et ça peut arriver après une union géométrique (ex. deux cases maritimes voisines qui ne
+    // s'alignaient plus exactement après avoir chacune soustrait la terre différemment le long
+    // de leur frontière commune) — un artefact numérique minuscule, jamais la forme voulue.
+    if (ring.length < 4) continue;
     let a = 0;
     for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
     const area = Math.abs(a) / 2;
@@ -329,8 +331,20 @@ function anchorOfPixelMultiPoly(multiPoly, preferredPoint) {
   if (!chosen) return null;
   // Le POLY entier (avec ses trous, ex. une île à l'intérieur d'une case maritime) est passé à
   // polylabel, pas seulement son contour extérieur : sinon le point retenu pourrait tomber en
-  // plein sur un trou (une île, donc hors de la case maritime elle-même).
-  const label = polylabel(chosen.poly, 0.5);
+  // plein sur un trou (une île, donc hors de la case maritime elle-même). Si un trou est lui-même
+  // dégénéré (ex. Madagascar entièrement enclavé dans une case océanique, réduit à presque rien
+  // après simplification), on retombe sur le contour extérieur seul plutôt que de faire échouer
+  // tout le chargement pour un simple point d'ancrage.
+  let label;
+  try {
+    label = polylabel(chosen.poly, 0.5);
+  } catch {
+    try {
+      label = polylabel([chosen.poly[0]], 0.5);
+    } catch {
+      return null;
+    }
+  }
   return { x: label[0], y: label[1] };
 }
 
@@ -403,6 +417,12 @@ function factoryAnchorFarFrom(multiPoly, avoidPoint) {
 // l'intérieur de la forme géométrique simplifiée qu'on dessine, pas de l'ancienne forme réelle.
 const labelAnchorById = new Map();
 
+// Nom du "grand ensemble" (région maritime, ex. "Atlantique Nord") -> { x, y } — un point bien
+// à l'intérieur de l'UNION de ses cases mer, pour un nom qui semble couvrir tout l'ensemble
+// (comme sur une carte du monde) plutôt qu'une seule de ses cases. Calculé une fois, après
+// labelAnchorById, dans loadGameData.
+const regionLabelAnchorById = new Map();
+
 // Même taille de police, minuscule, pour tous les territoires (dans l'espace de la texture,
 // qui couvre toute la Terre en TEX_W x TEX_H px) : à l'échelle du globe entier le nom est
 // presque invisible, volontairement discret ; en zoomant sur un pays ou une région, la même
@@ -412,11 +432,19 @@ const labelAnchorById = new Map();
 // 1600px de large (9/4096 < 7/1600), mais dessiné avec davantage de pixels sources, donc
 // moins pixelisé une fois agrandi par le zoom.
 const LABEL_FONT_SIZE = Math.round(TEX_W * 0.0022);
+// Nom d'un "grand ensemble" maritime (région) : nettement plus grand que celui d'une case ou
+// d'un territoire, pour donner l'impression de couvrir tout l'ensemble — comme le nom d'un
+// océan étalé sur une carte du monde — plutôt que de désigner un seul point.
+const ENSEMBLE_LABEL_FONT_SIZE = Math.round(TEX_W * 0.009);
+const ENSEMBLE_LABEL_COLOR = `rgb(${MARITIME_REGION_RGB.join(',')})`;
 
 // Dessine le nom de chaque territoire, toujours à la même place (calculée une seule fois,
 // voir labelAnchorById/anchorOfPixelMultiPoly). Un contour sombre derrière le texte blanc le
 // garde lisible quel que soit le fond (océan, désert, couleur de joueur une fois le
-// territoire attribué...).
+// territoire attribué...). Même mécanique pour le nom (en bleu, plus grand) de chaque grand
+// ensemble maritime : un texte dessiné une fois dans la texture à taille fixe, minuscule à
+// l'échelle du globe entier, que le même zoom caméra qui agrandit la carte rend lisible sans
+// rien recalculer — exactement comme pour les territoires.
 function drawLabels(ctx) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -430,6 +458,15 @@ function drawLabels(ctx) {
     if (!a) continue;
     ctx.strokeText(t.nom, a.x, a.y);
     ctx.fillText(t.nom, a.x, a.y);
+  }
+
+  ctx.font = `bold ${ENSEMBLE_LABEL_FONT_SIZE}px system-ui, sans-serif`;
+  ctx.lineWidth = ENSEMBLE_LABEL_FONT_SIZE * 0.14;
+  ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillStyle = ENSEMBLE_LABEL_COLOR;
+  for (const [region, a] of regionLabelAnchorById) {
+    ctx.strokeText(region, a.x, a.y);
+    ctx.fillText(region, a.x, a.y);
   }
 }
 
@@ -755,7 +792,7 @@ app.appendChild(regionLegendBar);
 const legend = document.createElement('div');
 legend.className = 'legend';
 legend.innerHTML = `
-  <div><b>47 territoires</b> + <b>8 cases maritimes</b> · 23 régions · 18 villes</div>
+  <div><b>47 territoires</b> + <b>16 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
@@ -1053,6 +1090,19 @@ function loadGameData(attempt = 1) {
       const preferredPoint = t.ville ? projection([t.ville.lon, t.ville.lat]) : undefined;
       const anchor = anchorOfPixelMultiPoly(displayGeometryById.get(t.id), preferredPoint);
       if (anchor) labelAnchorById.set(t.id, anchor);
+    }
+    for (const region of REGIONS) {
+      if (!regionIsMaritime.get(region)) continue;
+      const shapes = (territoiresParRegion[region] || []).map((id) => displayGeometryById.get(id)).filter(Boolean);
+      if (!shapes.length) continue;
+      try {
+        const union = shapes.length === 1 ? shapes[0] : polyUnion(shapes[0], ...shapes.slice(1));
+        const anchor = anchorOfPixelMultiPoly(union);
+        if (anchor) regionLabelAnchorById.set(region, anchor);
+      } catch {
+        // Topologie dégénérée à l'union : pas de nom de grand ensemble pour cette région plutôt
+        // que de faire échouer tout le chargement pour un simple label.
+      }
     }
     regionBorderOverlay = computeRegionBorderOverlay();
     drawBaseCanvas();

@@ -337,48 +337,54 @@ for (const [territoireId, feats] of Object.entries(byTerritoire)) {
 }
 
 // ---- 3.5 Cases maritimes ----
-// Pas de source Natural Earth pour la mer : une partition grossière des océans du monde en
-// rectangles lon/lat dessinés à la main (jamais une référence géographique précise — juste une
-// zone candidate). Leur forme définitive est calculée au chargement (main.js,
-// computeDisplayGeometry) : la terre qui les recouvre en est retirée (le bord qui touche une
-// côte suit alors cette côte réelle), puis elles se partagent entre elles par des droites
-// (Voronoï), toutes dans la même région de jeu ("Océans" — voir data/territoires.js) pour que
-// CE partage s'applique entre n'importe quelle paire de cases, pas seulement des voisines
-// nommées ensemble.
+// Pas de source Natural Earth pour la mer : chaque grand ensemble (océan/mer — une région de
+// jeu, voir data/territoires.js) est directement subdivisé ici en deux cases mer simples,
+// rectangulaires (Ouest/Est), dessinées à la main (jamais une référence géographique précise —
+// juste une zone candidate). Deux cases voisines d'un même ensemble sont déjà des rectangles
+// disjoints qui se touchent pile à leur frontière commune (ex. -40° pour "Atlantique Nord") :
+// pas besoin de les partager géométriquement (Voronoï) au chargement, juste soustraire la terre
+// qui recouvre chacune (main.js, computeDisplayGeometry) pour que son bord côtier suive la
+// vraie côte.
 //
-// Chaque valeur est une LISTE d'anneaux (pas un seul) : le Pacifique Nord/Sud a besoin de deux
-// rectangles simples (Asie→180° et -180°→Amériques) plutôt qu'un seul traversant
-// l'antiméridien — un rectangle qui franchit pile ±180° est un cas limite pour le découpage
-// antiméridien de d3-geo (utilisé plus tard, dans main.js) ; deux rectangles qui s'arrêtent
-// juste avant (179.9°/-179.9°) l'évitent complètement.
+// Le Pacifique Nord/Sud n'a plus besoin du contournement de l'antiméridien (deux anneaux dans
+// UNE MultiPolygon) utilisé avant que les deux moitiés ne deviennent des cases séparées : ce
+// sont maintenant deux features indépendantes ("...-ouest" reste sous 180°, "...-est" reste
+// au-dessus de -180°), chacune un simple Polygon qui ne traverse rien — voir cependant la marge
+// de 179.9°/-179.9° ci-dessous, toujours nécessaire sur le bord extérieur.
 const MARITIME_BOXES = {
-  'mer-arctique': [[[-179.9, 66], [179.9, 66], [179.9, 90], [-179.9, 90]]],
-  'mer-atlantiquenord': [[[-80, 0], [0, 0], [0, 66], [-80, 66]]],
-  'mer-atlantiquesud': [[[-70, -60], [20, -60], [20, 0], [-70, 0]]],
-  // Les deux morceaux se touchent exactement à ±180° (contrairement à "mer-arctique" ci-dessus,
-  // qui reste un anneau UNIQUE traversant toute la largeur — là, la marge de 0.1° évite qu'il
-  // tombe pile sur l'antiméridien que d3-geo utilise pour détecter un contour qui le
-  // TRAVERSE). Ici, deux anneaux déjà séparés qui s'arrêtent chacun pile à ±180° ne traversent
-  // rien : aucun risque de déclencher ce découpage, et ça évite un accolement imparfait
-  // (0.2° d'écart) qui se serait vu comme un mince liseré de couleur de région à la couture.
-  'mer-pacifiquenord': [
-    [[120, 0], [180, 0], [180, 66], [120, 66]],
-    [[-180, 0], [-100, 0], [-100, 66], [-180, 66]],
-  ],
-  'mer-pacifiquesud': [
-    [[120, -60], [180, -60], [180, 0], [120, 0]],
-    [[-180, -60], [-70, -60], [-70, 0], [-180, 0]],
-  ],
-  'mer-indien': [[[20, -60], [120, -60], [120, 30], [20, 30]]],
-  'mer-mediterranee': [[[-6, 30], [36, 30], [36, 46], [-6, 46]]],
-  'mer-caraibes': [[[-98, 7], [-55, 7], [-55, 31], [-98, 31]]],
+  // Bord extérieur à 179.9°/-179.9° plutôt que pile ±180° : un sommet EXACTEMENT sur
+  // l'antiméridien fait basculer le pré-découpage antiméridien de d3-geo (utilisé plus tard,
+  // dans main.js) dans un cas limite qui produit un anneau dégénéré (planté constaté : "invalid
+  // polygon, fewer than 4 points" pendant la simplification). Écart invisible à l'échelle du
+  // plateau (~11 km à l'équateur) entre "...-Ouest" et "...-Est", qui restent deux territoires
+  // distincts de toute façon (pas de partage géométrique à assurer entre eux à cette couture).
+  'mer-arctique-ouest': [[-179.9, 66], [0, 66], [0, 90], [-179.9, 90]],
+  'mer-arctique-est': [[0, 66], [179.9, 66], [179.9, 90], [0, 90]],
+
+  'mer-atlantiquenord-ouest': [[-80, 0], [-40, 0], [-40, 66], [-80, 66]],
+  'mer-atlantiquenord-est': [[-40, 0], [0, 0], [0, 66], [-40, 66]],
+
+  'mer-atlantiquesud-ouest': [[-70, -60], [-25, -60], [-25, 0], [-70, 0]],
+  'mer-atlantiquesud-est': [[-25, -60], [20, -60], [20, 0], [-25, 0]],
+
+  'mer-pacifiquenord-ouest': [[120, 0], [179.9, 0], [179.9, 66], [120, 66]],
+  'mer-pacifiquenord-est': [[-179.9, 0], [-100, 0], [-100, 66], [-179.9, 66]],
+
+  'mer-pacifiquesud-ouest': [[120, -60], [179.9, -60], [179.9, 0], [120, 0]],
+  'mer-pacifiquesud-est': [[-179.9, -60], [-70, -60], [-70, 0], [-179.9, 0]],
+
+  'mer-indien-ouest': [[20, -60], [70, -60], [70, 30], [20, 30]],
+  'mer-indien-est': [[70, -60], [120, -60], [120, 30], [70, 30]],
+
+  'mer-mediterranee-ouest': [[-6, 30], [15, 30], [15, 46], [-6, 46]],
+  'mer-mediterranee-est': [[15, 30], [36, 30], [36, 46], [15, 46]],
+
+  'mer-caraibes-ouest': [[-98, 7], [-76, 7], [-76, 31], [-98, 31]],
+  'mer-caraibes-est': [[-76, 7], [-55, 7], [-55, 31], [-76, 31]],
 };
-for (const [territoireId, rings] of Object.entries(MARITIME_BOXES)) {
-  const closedRings = rings.map((ring) => [...ring, ring[0]]);
-  const geometry = closedRings.length === 1
-    ? { type: 'Polygon', coordinates: [closedRings[0]] }
-    : { type: 'MultiPolygon', coordinates: closedRings.map((ring) => [ring]) };
-  merged.push({ type: 'Feature', properties: { territoireId }, geometry });
+for (const [territoireId, box] of Object.entries(MARITIME_BOXES)) {
+  const ring = [...box, box[0]];
+  merged.push({ type: 'Feature', properties: { territoireId }, geometry: { type: 'Polygon', coordinates: [ring] } });
 }
 
 // ---- 4. Nettoyage et simplification, île par île ----
