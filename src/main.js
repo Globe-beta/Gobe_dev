@@ -32,6 +32,24 @@ const MARITIME_FILL = 'rgba(64, 176, 230, 0.28)';
 const CITY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="12,1 15,9 23,9 16.5,14 19,22 12,17 5,22 7.5,14 1,9 9,9"/></svg>';
 const FACTORY_ICON_SVG = '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="2" y="12" width="20" height="9"/><rect x="5" y="6" width="3" height="7"/><rect x="11" y="3" width="3" height="10"/><rect x="17" y="8" width="3" height="5"/></svg>';
 
+// Pions que chaque joueur a en réserve (voir reservePanel), dans l'ordre d'affichage, avec
+// le stock de départ identique pour tous. Mêmes symboles que sur le globe pour le centre
+// urbain et l'usine ; les autres suivent le même style (formes pleines, lisibles en petit).
+const RESERVE_ITEMS = [
+  { key: 'soldats', label: 'Soldats', initial: 20,
+    svg: '<svg viewBox="0 0 24 24" fill="#1a1d24"><path d="M6.5 7.5a5.5 5.5 0 0111 0z"/><rect x="5" y="7" width="14" height="1.8" rx="0.9"/><circle cx="12" cy="11" r="2.6"/><path d="M5 22v-4.5a7 7 0 0114 0V22z"/></svg>' },
+  { key: 'navires', label: 'Bateaux de guerre', initial: 20,
+    svg: '<svg viewBox="0 0 24 24" fill="#1a1d24"><path d="M1.5 14h21l-3.5 6H5z"/><rect x="7" y="9" width="8" height="5"/><rect x="9.5" y="4" width="2.2" height="5"/><rect x="15" y="10.5" width="6.5" height="1.8"/></svg>' },
+  { key: 'transports', label: 'Bateaux de transport', initial: 5,
+    svg: '<svg viewBox="0 0 24 24" fill="#1a1d24"><path d="M1.5 15h21l-3.5 5H5z"/><rect x="3" y="10.5" width="4" height="4"/><rect x="8" y="10.5" width="4" height="4"/><rect x="13" y="10.5" width="4" height="4"/><rect x="18" y="5" width="3" height="9.5"/></svg>' },
+  { key: 'trains', label: 'Trains', initial: 5,
+    svg: '<svg viewBox="0 0 24 24" fill="#1a1d24"><path fill-rule="evenodd" d="M5 6a3 3 0 013-3h8a3 3 0 013 3v11H5zM7.5 6v5h9V6z"/><path d="M7 17h2.5l-2 3H5zM17 17h-2.5l2 3H19z"/><rect x="2" y="20.5" width="20" height="1.8"/></svg>' },
+  { key: 'villes', label: 'Centres urbains', initial: 5, svg: CITY_ICON_SVG },
+  { key: 'usines', label: 'Usines', initial: 10, svg: FACTORY_ICON_SVG },
+  { key: 'ports', label: 'Ports', initial: 10,
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="#1a1d24" stroke-width="2.6" stroke-linecap="round"><circle cx="12" cy="5" r="2.4"/><path d="M12 7.5V21M7.5 11h9M4 13.5a8 8 0 0016 0"/></svg>' },
+];
+
 // Un symbole par type de ressource (celles listées dans TERRITOIRES[].ressources), affiché
 // dans un petit cercle à côté de chaque usine — voir buildResourceMarkers.
 const RESOURCE_ICON_SVG = {
@@ -681,6 +699,9 @@ function findTerritoireAt(lat, lng) {
 // territoireId -> index de joueur (0-3) | undefined si non attribué
 const ownership = {};
 let activePlayer = 0;
+// Réserve propre à chaque joueur (voir RESERVE_ITEMS) : { soldats: 20, navires: 20, … }.
+const initialReserve = () => Object.fromEntries(RESERVE_ITEMS.map((item) => [item.key, item.initial]));
+const reserves = PLAYERS.map(initialReserve);
 // Territoire actuellement touché, en attente de confirmation ("Envahir") | null si aucun.
 let selectedId = null;
 
@@ -797,8 +818,9 @@ const resetBtn = document.createElement('button');
 resetBtn.className = 'btn';
 resetBtn.textContent = 'Réinitialiser';
 resetBtn.onclick = () => {
-  if (!confirm('Effacer toutes les attributions de territoires ?')) return;
+  if (!confirm('Effacer toutes les attributions de territoires et remettre les réserves à zéro ?')) return;
   for (const k of Object.keys(ownership)) delete ownership[k];
+  reserves.forEach((r, i) => { reserves[i] = initialReserve(); });
   renderAll();
 };
 topbar.appendChild(resetBtn);
@@ -820,10 +842,18 @@ app.appendChild(regionLegendBar);
 
 // Sur écran étroit, le bandeau jaune de statut passe sur deux lignes : on place le menu des
 // régions juste sous sa hauteur RÉELLE plutôt qu'à une position fixe qui le ferait chevaucher.
+// La réserve du joueur (colonne de droite, voir reservePanel) se place à son tour juste sous
+// la liste des régions, dépliée ou non : dépliée sur grand écran, celle-ci s'étire sur toute la
+// largeur et en masquait sinon le haut.
 function placeRegionLegend() {
   regionLegendBar.style.top = `${Math.round(statusEl.getBoundingClientRect().bottom) + 6}px`;
+  if (typeof reservePanel === 'undefined') return;
+  const top = Math.round(regionLegendBar.getBoundingClientRect().bottom) + 8;
+  reservePanel.style.top = `${top}px`;
+  reservePanel.style.maxHeight = `${window.innerHeight - top - 12}px`;
 }
 placeRegionLegend();
+regionLegendBar.addEventListener('toggle', placeRegionLegend);
 
 // Même principe que la liste des régions : menu déroulant, replié par défaut sur téléphone
 // (où la légende dépliée couvrait près de la moitié de l'écran), déplié sur grand écran.
@@ -847,6 +877,35 @@ legend.innerHTML = `
   </div>
 `;
 app.appendChild(legend);
+
+// Réserve du joueur actif : ce qu'il lui reste à poser (unités, centres urbains, usines,
+// ports), une icône dans un cercle par type avec le nombre restant dessous. Chaque joueur a
+// sa propre réserve : le panneau affiche celle du joueur dont c'est le tour, à sa couleur, et
+// bascule avec lui (puce joueur ou "Joueur suivant").
+const reservePanel = document.createElement('div');
+reservePanel.className = 'reserve-panel';
+reservePanel.innerHTML = `
+  <div class="reserve-title"><span class="dot"></span><span class="name"></span></div>
+  ${RESERVE_ITEMS.map((item) => `
+    <div class="reserve-item" data-key="${item.key}" title="${item.label}">
+      <span class="reserve-icon">${item.svg}</span>
+      <span class="reserve-count"></span>
+    </div>
+  `).join('')}
+`;
+app.appendChild(reservePanel);
+placeRegionLegend();
+function renderReservePanel() {
+  const player = PLAYERS[activePlayer];
+  const reserve = reserves[activePlayer];
+  reservePanel.style.setProperty('--player-color', player.color);
+  reservePanel.querySelector('.reserve-title .name').textContent = player.name;
+  for (const el of reservePanel.querySelectorAll('.reserve-item')) {
+    const n = reserve[el.dataset.key];
+    el.querySelector('.reserve-count').textContent = n;
+    el.classList.toggle('empty', n <= 0);
+  }
+}
 
 const toast = document.createElement('div');
 toast.className = 'panel-toast';
@@ -1053,6 +1112,8 @@ function renderAll() {
   if (globeTexture) redrawLive();
   // Rafraîchit les marqueurs (nouvelle référence de tableau pour forcer le re-rendu des couleurs)
   world.htmlElementsData([...markersData]);
+
+  renderReservePanel();
 
   chips.forEach((chip, i) => {
     chip.style.borderColor = i === activePlayer ? '#fff' : 'transparent';
