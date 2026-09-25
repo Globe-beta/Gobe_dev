@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import Globe from 'globe.gl';
 import { geoEquirectangular, geoPath } from 'd3-geo';
-import { Delaunay } from 'd3-delaunay';
 import { union as polyUnion, intersection as polyIntersection, difference as polyDifference } from 'polyclip-ts';
 import simplify from '@turf/simplify';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
@@ -126,7 +125,35 @@ function densifyRing(ring) {
   out.push(ring[ring.length - 1]);
   return out;
 }
-function densifyGeometry(geometry) {
+// Une case qui couvre toute la calotte polaire (de -179.9° à 179.9°, jusqu'à 90°N : l'Océan
+// Arctique central) est écrite en rectangle dans les données. Sur la sphère, ce rectangle a
+// deux côtés verticaux le long du méridien 180°, qui dessineraient un trait jusqu'au pôle. On
+// la redessine donc en un simple anneau le long de son parallèle sud, qui fait le tour du pôle :
+// d3-geo en déduit tout seul que la forme contient le pôle.
+const polarCapLatById = new Map(); // id d'une case calotte polaire -> latitude de son bord
+function polarCapGeometry(geometry) {
+  if (geometry.type !== 'Polygon') return null;
+  const ring = geometry.coordinates[0];
+  const lons = ring.map(([lon]) => lon);
+  const lats = ring.map(([, lat]) => lat);
+  if (Math.max(...lats) < 89.9 || Math.min(...lons) > -179.8 || Math.max(...lons) < 179.8) return null;
+  const lat = Math.min(...lats);
+  // Premier/dernier sommet à 0.001° de l'antiméridien (pas pile dessus : voir la marge de
+  // 179.9° dans scripts/build-geo.mjs) : là où d3-geo coupe l'anneau, ils tombent ainsi à
+  // moins d'un pixel du bord de la texture, et le trait qui les relierait au pôle est bien
+  // reconnu comme un bord de texture (strokePixelPathWithoutTextureEdges) plutôt que dessiné.
+  const EDGE = 179.999;
+  const cap = [[-EDGE, lat]];
+  for (let lon = -179.5; lon < EDGE; lon += DENSIFY_STEP_DEG) cap.push([lon, lat]);
+  cap.push([EDGE, lat], [-EDGE, lat]); // fermeture : court arc à travers l'antiméridien
+  return { type: 'Polygon', coordinates: [cap] };
+}
+function densifyGeometry(geometry, id) {
+  const cap = polarCapGeometry(geometry);
+  if (cap) {
+    polarCapLatById.set(id, cap.coordinates[0][0][1]);
+    return cap;
+  }
   const polys = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
   const coordinates = polys.map((rings) => rings.map(densifyRing));
   return geometry.type === 'Polygon' ? { type: 'Polygon', coordinates: coordinates[0] } : { type: 'MultiPolygon', coordinates };
@@ -193,6 +220,29 @@ function drawPixelPath(ctx, multiPoly) {
   }
 }
 
+// Comme drawPixelPath, pour un TRAIT : saute les segments posés pile sur un bord de la texture.
+// Ceux-là ne sont pas de vraies frontières mais la coupure de la carte à plat (antiméridien
+// à gauche/droite, pôle Nord en haut) là où une forme qui la traverse est découpée : tracés,
+// ils dessinaient un trait du bord de la forme jusqu'au pôle, ou le long du méridien 180°.
+const TEXTURE_EDGE_TOLERANCE_PX = 0.5;
+function onTextureEdge([x0, y0], [x1, y1]) {
+  const t = TEXTURE_EDGE_TOLERANCE_PX;
+  return (x0 <= t && x1 <= t) || (x0 >= TEX_W - t && x1 >= TEX_W - t)
+    || (y0 <= t && y1 <= t) || (y0 >= TEX_H - t && y1 >= TEX_H - t);
+}
+function strokePixelPathWithoutTextureEdges(ctx, multiPoly) {
+  for (const poly of multiPoly) {
+    for (const ring of poly) {
+      ctx.moveTo(ring[0][0], ring[0][1]);
+      for (let i = 1; i < ring.length; i++) {
+        if (onTextureEdge(ring[i - 1], ring[i])) ctx.moveTo(ring[i][0], ring[i][1]);
+        else ctx.lineTo(ring[i][0], ring[i][1]);
+      }
+      if (!onTextureEdge(ring[ring.length - 1], ring[0])) ctx.lineTo(ring[0][0], ring[0][1]);
+    }
+  }
+}
+
 // territoireId -> forme affichée sur la carte (MultiPoly en coordonnées pixel), utilisée pour
 // le dessin, la détection de clic ET le placement des noms — voir computeDisplayGeometry.
 const displayGeometryById = new Map();
@@ -205,17 +255,22 @@ const displayGeometryById = new Map();
 // image de 4096px de large) est imperceptible visuellement mais réduit le calcul d'un ordre
 // de grandeur.
 function simplifyPixelMultiPoly(multiPoly, tolerance = 1.5) {
-  const feature = { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: multiPoly } };
-  return simplify(feature, { tolerance, highQuality: false, mutate: false }).geometry.coordinates;
+  const simplifyOne = (coordinates) => simplify(
+    { type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates } },
+    { tolerance, highQuality: false, mutate: false },
+  ).geometry.coordinates;
+  try {
+    return simplifyOne(multiPoly);
+  } catch {
+    // Un morceau dégénéré fait échouer @turf/simplify sur toute la forme : on simplifie alors
+    // morceau par morceau, en gardant tel quel celui qui résiste, plutôt que de bloquer le
+    // chargement de tout le jeu pour un détail de tracé.
+    return multiPoly.flatMap((poly) => {
+      try { return simplifyOne([poly]); } catch { return [poly]; }
+    });
+  }
 }
 
-// Pour une région à plusieurs territoires, remplace le tracé RÉEL (sinueux, suit les vraies
-// frontières/côtes) entre ses territoires par un partage géométrique de type Voronoï : des
-// droites (médiatrices entre les positions des territoires), donc des formes bien plus
-// "lisibles" qu'un vrai tracé politique — tout en gardant EXACTEMENT le contour extérieur
-// réel de la région (chaque cellule de Voronoï est découpée pour ne jamais déborder de
-// l'union réelle des territoires de la région). Pour une région à un seul territoire, rien à
-// partager : sa forme réelle, projetée, est gardée telle quelle.
 // Bornes [x0,y0,x1,y1] d'un MultiPoly pixel — utilisé pour ne tester que les paires de formes
 // dont les rectangles englobants se chevauchent (voir subtractLandFrom), plutôt que de lancer
 // une différence géométrique coûteuse contre chacun des 47 territoires terrestres à chaque fois.
@@ -253,10 +308,7 @@ function computeDisplayGeometry() {
   // n'importe quelle frontière terrestre), pas garder un simple rectangle par-dessus la terre.
   // On soustrait donc la terre qui recouvre chaque case maritime avant tout le reste : le
   // résultat devient sa "vraie" forme, exactement comme canvasGeometryById l'est pour un
-  // territoire terrestre — le partage géométrique (Voronoï) avec une case maritime voisine,
-  // juste en dessous, s'applique ensuite exactement de la même façon que pour deux territoires
-  // terrestres du même type dans une même région : trait droit là où il n'y a pas de côte à
-  // suivre.
+  // territoire terrestre.
   const landPixelMPsWithBbox = TERRITOIRES
     .filter((t) => t.type !== 'maritime')
     .map((t) => {
@@ -297,40 +349,149 @@ function computeDisplayGeometry() {
       // Une région maritime (un "grand ensemble" océan/mer) est directement subdivisée à la
       // main (scripts/build-geo.mjs) en cases mer rectangulaires DÉJÀ disjointes, qui se
       // touchent pile à leur frontière commune (ex. -40° pour "Atlantique Nord") : pas besoin
-      // de les partager géométriquement (Voronoï) entre elles comme pour une région terrestre
-      // composite (dont les territoires réels, eux, se chevauchent/s'articulent de façon
-      // irrégulière) — chacune garde simplement sa propre forme (candidate moins la terre).
+      // de les partager géométriquement (rectangularCells) entre elles comme pour une région
+      // terrestre composite — chacune garde simplement sa propre forme (candidate moins la terre).
       for (const id of ids) displayGeometryById.set(id, pixelMPs.get(id));
       continue;
     }
 
     const regionOuter = withoutHoles(polyUnion(pixelMPs.get(ids[0]), ...ids.slice(1).map((id) => pixelMPs.get(id))));
 
+    // Une région qui traverse l'antiméridien (Russie : la pointe de la Tchoukotka, au-delà de
+    // 180°, revient tout à gauche de la carte à plat) est d'abord "dépliée" : ses morceaux de la
+    // moitié gauche sont décalés d'une largeur de carte vers la droite, pour la découper d'un
+    // seul tenant. Sinon, cette pointe tomberait dans le rectangle du territoire le plus à
+    // l'ouest de la région (Russie occidentale), à l'autre bout du pays.
+    const [rx0, , rx1] = bboxOfPixelMultiPoly(regionOuter);
+    const wraps = rx0 <= 2 && rx1 >= TEX_W - 2;
+    const unwrapX = (x) => (wraps && x < TEX_W / 2 ? x + TEX_W : x);
+    const outer = wraps
+      ? regionOuter.map((poly) => (Math.max(...poly[0].map(([x]) => x)) < TEX_W / 2 ? poly.map((ring) => ring.map(([x, y]) => [x + TEX_W, y])) : poly))
+      : regionOuter;
+
     const sites = ids.map((id) => {
       const ville = TERRITOIRE_PAR_ID[id]?.ville;
       const preferredPoint = ville ? projection([ville.lon, ville.lat]) : undefined;
-      return anchorOfPixelMultiPoly(pixelMPs.get(id), preferredPoint);
+      const a = anchorOfPixelMultiPoly(pixelMPs.get(id), preferredPoint);
+      return a ? [unwrapX(a.x), a.y] : null;
     });
-    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-    for (const mp of pixelMPs.values()) {
-      const [x0, y0, x1, y1] = bboxOfPixelMultiPoly(mp);
-      bx0 = Math.min(bx0, x0); by0 = Math.min(by0, y0);
-      bx1 = Math.max(bx1, x1); by1 = Math.max(by1, y1);
-    }
-    // Bornes du diagramme de Voronoï largement plus grandes que la région elle-même : sinon
-    // les cellules seraient tronquées par les bornes avant même d'être découpées par le vrai
-    // contour de la région, ce qui déplacerait les médiatrices calculées.
-    const padX = Math.max(50, (bx1 - bx0) * 0.5);
-    const padY = Math.max(50, (by1 - by0) * 0.5);
-    const voronoi = Delaunay.from(sites.map((s) => [s.x, s.y])).voronoi([bx0 - padX, by0 - padY, bx1 + padX, by1 + padY]);
+    const rects = rectangularCells(outer, sites);
 
     for (let i = 0; i < ids.length; i++) {
-      const cell = voronoi.cellPolygon(i);
-      if (!cell) continue;
-      const clipped = polyIntersection([cell], regionOuter);
+      if (!rects[i]) continue;
+      let clipped = polyIntersection([rectRing(rects[i])], outer);
+      if (wraps) {
+        // Repli : la partie au-delà du bord droit revient à gauche de la carte.
+        const inMap = polyIntersection(clipped, [rectRing([-1, -1, TEX_W, TEX_H + 1])]);
+        const beyond = polyIntersection(clipped, [rectRing([TEX_W, -1, 2 * TEX_W + 1, TEX_H + 1])])
+          .map((poly) => poly.map((ring) => ring.map(([x, y]) => [x - TEX_W, y])));
+        clipped = [...inMap, ...beyond];
+      }
       if (clipped.length) displayGeometryById.set(ids[i], clipped);
     }
   }
+}
+
+// Partage géométrique d'une région à plusieurs territoires en RECTANGLES (traits uniquement
+// horizontaux et verticaux sur la carte à plat, c.-à-d. parallèles et méridiens sur le globe),
+// à la place du tracé réel, sinueux, de leurs frontières — et à la place des traits obliques
+// d'un diagramme de Voronoï, qui donnait des formes peu lisibles (Chine, Brésil) et des traits
+// qui semblaient converger vers le pôle (Russie). Le contour extérieur de la région reste
+// exactement le vrai (chaque rectangle est ensuite découpé par lui).
+//
+// Découpage récursif en deux (comme un arbre k-d) : on coupe la partie courante de la région
+// dans son sens le plus long (largeur réelle, corrigée de l'étirement de la carte avec la
+// latitude), entre les positions des territoires (leur ville, sinon le cœur de leur forme),
+// chaque côté recevant une part de surface proportionnelle à son nombre de territoires — pour
+// des cases de tailles comparables, aussi proches que possible du carré. Chaque territoire
+// garde toujours sa position (sa ville) dans son propre rectangle.
+function rectRing([x0, y0, x1, y1]) {
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+}
+function ringAreaPx(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  return Math.abs(a) / 2;
+}
+// Sutherland–Hodgman : ne garde d'un anneau que sa partie du côté "coord < c" (below) ou
+// "coord >= c" d'une droite horizontale/verticale — rapide, suffisant pour mesurer des aires.
+function clipRingAxis(ring, axis, c, below) {
+  const inside = (p) => (below ? p[axis] < c : p[axis] >= c);
+  const out = [];
+  for (let i = 0; i < ring.length - 1; i++) {
+    const p = ring[i];
+    const q = ring[i + 1];
+    const pin = inside(p);
+    const qin = inside(q);
+    if (pin) out.push(p);
+    if (pin !== qin) {
+      const t = (c - p[axis]) / (q[axis] - p[axis]);
+      out.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
+    }
+  }
+  if (out.length) out.push(out[0]);
+  return out;
+}
+function clipRingRect(ring, [x0, y0, x1, y1]) {
+  let r = ring;
+  r = clipRingAxis(r, 0, x0, false); if (r.length < 4) return null;
+  r = clipRingAxis(r, 0, x1, true); if (r.length < 4) return null;
+  r = clipRingAxis(r, 1, y0, false); if (r.length < 4) return null;
+  r = clipRingAxis(r, 1, y1, true); if (r.length < 4) return null;
+  return r;
+}
+function rectangularCells(regionOuter, sites) {
+  const rings = regionOuter.map((poly) => poly[0]);
+  const partIn = (rect) => rings.map((r) => clipRingRect(r, rect)).filter(Boolean);
+  const areaIn = (rect) => partIn(rect).reduce((a, r) => a + ringAreaPx(r), 0);
+  const bboxIn = (rect) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const r of partIn(rect)) for (const [x, y] of r) {
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+    return x0 === Infinity ? rect : [x0, y0, x1, y1];
+  };
+  const rects = new Array(sites.length).fill(null);
+  const usable = sites.map((s, i) => (s ? i : -1)).filter((i) => i >= 0);
+  const all = bboxIn([-Infinity, -Infinity, Infinity, Infinity]);
+  const PAD = 10;
+
+  function split(indices, rect) {
+    if (indices.length === 1) { rects[indices[0]] = rect; return; }
+    const pb = bboxIn(rect);
+    const latMid = 90 - ((pb[1] + pb[3]) / 2 / TEX_H) * 180;
+    const widthKm = (pb[2] - pb[0]) * Math.cos((latMid * Math.PI) / 180);
+    const heightKm = pb[3] - pb[1];
+    const k = Math.floor(indices.length / 2);
+    const gapAlong = (axis) => {
+      const sorted = [...indices].sort((a, b) => sites[a][axis] - sites[b][axis]);
+      return { axis, sorted, lo: sites[sorted[k - 1]][axis], hi: sites[sorted[k]][axis] };
+    };
+    let cut = gapAlong(widthKm >= heightKm ? 0 : 1);
+    if (cut.hi - cut.lo < 1) {
+      const other = gapAlong(1 - cut.axis);
+      if (other.hi - other.lo > cut.hi - cut.lo) cut = other;
+    }
+    const { axis, sorted, lo, hi } = cut;
+    // Position de la coupe : la surface du côté "bas" doit valoir k/n de la partie courante,
+    // mais toujours strictement entre les deux groupes de territoires (recherche dichotomique).
+    const target = (areaIn(rect) * k) / indices.length;
+    const margin = Math.min(4, (hi - lo) / 4);
+    let a = lo + margin;
+    let b = hi - margin;
+    for (let it = 0; it < 24 && b - a > 0.25; it++) {
+      const c = (a + b) / 2;
+      const belowRect = axis === 0 ? [rect[0], rect[1], c, rect[3]] : [rect[0], rect[1], rect[2], c];
+      if (areaIn(belowRect) < target) a = c; else b = c;
+    }
+    const c = (a + b) / 2;
+    const low = axis === 0 ? [rect[0], rect[1], c, rect[3]] : [rect[0], rect[1], rect[2], c];
+    const high = axis === 0 ? [c, rect[1], rect[2], rect[3]] : [rect[0], c, rect[2], rect[3]];
+    split(sorted.slice(0, k), low);
+    split(sorted.slice(k), high);
+  }
+  if (usable.length) split(usable, [all[0] - PAD, all[1] - PAD, all[2] + PAD, all[3] + PAD]);
+  return rects;
 }
 
 function hslToRgb(h, s, l) {
@@ -361,7 +522,8 @@ const regionColor = new Map(REGIONS.map((r) => [r, `rgb(${regionRgb.get(r).join(
 let regionBorderOverlay = null;
 
 // { x, y } en pixels du canvas pour un MultiPoly pixel (voir projectToPixelMultiPoly) —
-// utilisé à la fois comme site du diagramme de Voronoï (computeDisplayGeometry) et comme
+// utilisé à la fois comme position d'un territoire pour le découpage en rectangles de sa
+// région (computeDisplayGeometry, rectangularCells) et comme
 // position d'ancrage des noms de territoires (labelAnchorById). On utilise le "pôle
 // d'inaccessibilité" (polylabel, la même technique que Mapbox pour le placement des noms de
 // pays sur une carte) plutôt que le centre géométrique : contrairement au centre, ce point
@@ -513,6 +675,22 @@ const ENSEMBLE_LABEL_COLOR = `rgb(${MARITIME_REGION_RGB.join(',')})`;
 // ensemble maritime : un texte dessiné une fois dans la texture à taille fixe, minuscule à
 // l'échelle du globe entier, que le même zoom caméra qui agrandit la carte rend lisible sans
 // rien recalculer — exactement comme pour les territoires.
+// Sur la carte à plat, un parallèle à la latitude φ est aussi long que l'équateur, mais il est
+// cos(φ) fois plus court sur le globe : un nom écrit tel quel y paraît donc comprimé en largeur
+// (de moitié à 60°N, et en simple tache près du pôle). On l'élargit d'autant sur la carte pour
+// qu'il retrouve ses proportions normales une fois posé sur le globe.
+const LABEL_MAX_STRETCH = 6;
+function drawStretchedText(ctx, text, x, y) {
+  const lat = 90 - (y / TEX_H) * 180;
+  const stretch = Math.min(LABEL_MAX_STRETCH, 1 / Math.max(1e-6, Math.cos((lat * Math.PI) / 180)));
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(stretch, 1);
+  ctx.strokeText(text, 0, 0);
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
 function drawLabels(ctx) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -524,8 +702,7 @@ function drawLabels(ctx) {
   for (const t of TERRITOIRES) {
     const a = labelAnchorById.get(t.id);
     if (!a) continue;
-    ctx.strokeText(t.nom, a.x, a.y);
-    ctx.fillText(t.nom, a.x, a.y);
+    drawStretchedText(ctx, t.nom, a.x, a.y);
   }
 
   ctx.font = `bold ${ENSEMBLE_LABEL_FONT_SIZE}px system-ui, sans-serif`;
@@ -533,8 +710,7 @@ function drawLabels(ctx) {
   ctx.strokeStyle = 'rgba(0,0,0,0.75)';
   ctx.fillStyle = ENSEMBLE_LABEL_COLOR;
   for (const [region, a] of regionLabelAnchorById) {
-    ctx.strokeText(region, a.x, a.y);
-    ctx.fillText(region, a.x, a.y);
+    drawStretchedText(ctx, region, a.x, a.y);
   }
 }
 
@@ -590,6 +766,9 @@ function computeRegionBorderOverlay() {
   const PAD = REGION_BORDER_RADIUS + 2;
 
   for (const region of REGIONS) {
+    // Pas de contour de couleur autour des grands ensembles maritimes (océans, mers) : seuls
+    // les traits noirs entre leurs cases (drawBaseCanvas) les délimitent.
+    if (regionIsMaritime.get(region)) continue;
     const ids = territoiresParRegion[region] || [];
     const shapes = ids.map((tid) => displayGeometryById.get(tid)).filter(Boolean);
     if (!shapes.length) continue;
@@ -619,6 +798,9 @@ function computeRegionBorderOverlay() {
     }
     const { data } = maskCtx.getImageData(x0, y0, w, h);
     const inside = (lx, ly) => lx >= 0 && lx < w && ly >= 0 && ly < h && data[(ly * w + lx) * 4 + 3] > ALPHA_THRESHOLD;
+    // Au-delà du bord de la texture (antiméridien à gauche/droite, pôles en haut/bas), la
+    // région continue de l'autre côté du globe : ce n'est pas une frontière à tracer.
+    const insideOrBeyond = (lx, ly) => inside(lx, ly) || x0 + lx < 0 || x0 + lx >= TEX_W || y0 + ly < 0 || y0 + ly >= TEX_H;
     const [r, g, b] = regionRgb.get(region);
     const stamp = (lx, ly) => {
       for (let dy = -REGION_BORDER_RADIUS; dy <= REGION_BORDER_RADIUS; dy++) {
@@ -635,7 +817,7 @@ function computeRegionBorderOverlay() {
     for (let ly = 0; ly < h; ly++) {
       for (let lx = 0; lx < w; lx++) {
         if (!inside(lx, ly)) continue;
-        if (inside(lx - 1, ly) && inside(lx + 1, ly) && inside(lx, ly - 1) && inside(lx, ly + 1)) continue; // pixel intérieur, pas une frontière
+        if (insideOrBeyond(lx - 1, ly) && insideOrBeyond(lx + 1, ly) && insideOrBeyond(lx, ly - 1) && insideOrBeyond(lx, ly + 1)) continue; // pixel intérieur, pas une frontière
         stamp(lx, ly);
       }
     }
@@ -669,7 +851,7 @@ function drawBaseCanvas() {
   baseCtx.lineWidth = TEX_W * 0.0006;
   for (const mp of displayGeometryById.values()) {
     baseCtx.beginPath();
-    drawPixelPath(baseCtx, mp);
+    strokePixelPathWithoutTextureEdges(baseCtx, mp);
     baseCtx.stroke();
   }
 
@@ -889,7 +1071,7 @@ legend.open = window.matchMedia('(min-width: 700px)').matches;
 legend.innerHTML = `
   <summary>Légende</summary>
   <div class="legend-body">
-  <div><b>47 territoires</b> + <b>19 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
+  <div><b>47 territoires</b> + <b>20 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
@@ -1216,7 +1398,7 @@ function loadGameData(attempt = 1) {
       // Densifié AVANT le contrôle d'orientation de dewrapGeometry (fixPieceWinding), qui mesure
       // l'aire de la forme telle que d3-geo la voit : sans sommets intermédiaires, cette aire
       // est celle de la forme déformée par les arcs de grand cercle, pas de la vraie case.
-      const raw = TERRITOIRE_PAR_ID[id]?.type === 'maritime' ? densifyGeometry(f.geometry) : f.geometry;
+      const raw = TERRITOIRE_PAR_ID[id]?.type === 'maritime' ? densifyGeometry(f.geometry, id) : f.geometry;
       canvasGeometryById.set(id, dewrapGeometry(raw));
     }
     computeDisplayGeometry();
@@ -1225,9 +1407,19 @@ function loadGameData(attempt = 1) {
       const anchor = anchorOfPixelMultiPoly(displayGeometryById.get(t.id), preferredPoint);
       if (anchor) labelAnchorById.set(t.id, anchor);
     }
+    // Calotte polaire : son nom se placerait sinon au milieu de la bande (vers 85°N), là où la
+    // carte à plat l'écrase en une tache au pôle. On le pose près de son bord, face à l'Europe.
+    for (const [id, capLat] of polarCapLatById) {
+      const [x, y] = projection([0, capLat + 2.5]);
+      labelAnchorById.set(id, { x, y });
+    }
     for (const region of REGIONS) {
       if (!regionIsMaritime.get(region)) continue;
-      const shapes = (territoiresParRegion[region] || []).map((id) => displayGeometryById.get(id)).filter(Boolean);
+      // Nom du grand ensemble placé hors de la calotte polaire (même raison que ci-dessus),
+      // sauf si l'ensemble n'est fait que de ça.
+      const ids = territoiresParRegion[region] || [];
+      const idsHorsCalotte = ids.filter((id) => !polarCapLatById.has(id));
+      const shapes = (idsHorsCalotte.length ? idsHorsCalotte : ids).map((id) => displayGeometryById.get(id)).filter(Boolean);
       if (!shapes.length) continue;
       try {
         const union = shapes.length === 1 ? shapes[0] : polyUnion(shapes[0], ...shapes.slice(1));
@@ -1280,6 +1472,7 @@ function loadGameData(attempt = 1) {
     readyStatusBase = `build ${BUILD_ID} · Prêt · ${geo.features.length} terr. · ${totalPoints} pts`;
     renderAll();
   }).catch((err) => {
+    console.error(err); // trace complète dans la console du navigateur, pour le diagnostic
     if (attempt < 3) {
       setTimeout(() => loadGameData(attempt + 1), 1500);
       return;

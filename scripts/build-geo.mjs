@@ -25,7 +25,7 @@ import kinks from '@turf/kinks';
 import truncate from '@turf/truncate';
 import buffer from '@turf/buffer';
 import area from '@turf/area';
-import { difference as polyDifference } from 'polyclip-ts';
+import { difference as polyDifference, intersection as polyIntersection } from 'polyclip-ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -355,15 +355,29 @@ for (const [territoireId, feats] of Object.entries(byTerritoire)) {
 // limite qui produit un anneau dégénéré ("invalid polygon, fewer than 4 points" pendant la
 // simplification). Écart invisible à l'échelle du plateau (~11 km à l'équateur).
 const MARITIME_ZONES = [
-  // Mer du Nord et Baltique : fermée au nord par un trait nord de l'Écosse → côte norvégienne,
-  // et au sud-ouest par le Pas de Calais ; le reste du contour passe par les terres.
-  ['mer-nord-baltique', [[-3.3, 58.5], [5.2, 61.0], [7.5, 60.8], [12, 63.5], [15, 66.5], [26, 66.3], [31, 64], [33, 58], [25, 53], [12, 52.5], [6, 52.5], [3, 50.5], [1.75, 50.8], [1.2, 51.15], [-1, 51.5], [-2.5, 53], [-2.5, 54.5], [-3.5, 55.6], [-4.3, 56.5], [-4.8, 57.6]]],
-  // Mer de Norvège : du méridien 0° jusqu'au trait pôle Nord → côte nord de la Norvège (29.5°E,
-  // sur la péninsule de Varanger, juste avant la frontière russe : la Norvège reste ainsi
-  // bordée, à l'est de ce trait, par l'Arctique oriental qui longe la Russie).
-  ['mer-norvege', [[0, 90], [29.5, 90], [29.5, 70.35], [26, 69.3], [20, 58], [0, 58]]],
-  ['mer-arctique-est', [[26, 66], [179.9, 66], [179.9, 90], [29.5, 90], [29.5, 70.35], [26, 69.3]]],
-  ['mer-arctique-ouest', [[-179.9, 66], [0, 66], [0, 90], [-179.9, 90]]],
+  // Mer du Nord et Baltique : fermée au nord par un trait horizontal nord de l'Écosse → côte
+  // norvégienne (58.5°N), et au sud-ouest par le Pas de Calais ; le reste du contour passe par
+  // les terres.
+  ['mer-nord-baltique', [[-3.3, 58.5], [7, 58.5], [9, 60.5], [12, 63.5], [15, 66.5], [26, 66.3], [31, 64], [33, 58], [25, 53], [12, 52.5], [6, 52.5], [3, 50.5], [1.75, 50.8], [1.2, 51.15], [-1, 51.5], [-2.5, 53], [-2.5, 54.5], [-3.5, 55.6], [-4.3, 56.5], [-4.8, 57.6]]],
+  // Aucun trait ne monte jusqu'au pôle (ils y convergeaient en éventail) : chaque trait part
+  // d'une côte et s'arrête sur une autre côte (ou sur un autre trait), en droite horizontale ou
+  // verticale sur la carte.
+  //
+  // Mer de Norvège : bornée à l'ouest par le Groenland, au sud par les traits Groenland →
+  // Islande (66°N) et Islande → Norvège (65°N), à l'est par le trait vertical Norvège (Nordkapp,
+  // 25°E) → Svalbard, au nord par l'Océan Arctique central (79.5°N). La côte norvégienne à l'est
+  // de ce trait (jusqu'à la frontière russe) reste bordée par l'Arctique oriental.
+  ['mer-norvege', [[-40, 66], [-40, 79.5], [25, 79.5], [25, 70.5], [18, 67], [13.5, 65], [-15, 65], [-21.5, 65.3], [-22, 65.8], [-23.3, 66]]],
+  // Arctique oriental : le long de la Russie, du trait Norvège → Svalbard au trait vertical
+  // Tchoukotka → île Wrangel (180°), mer Blanche comprise ; contour sud par les terres.
+  ['mer-arctique-est', [[25, 70.5], [25, 79.5], [179.9, 79.5], [179.9, 67], [140, 64], [80, 62], [45, 62], [34, 62], [30, 64], [27, 68]]],
+  // Arctique occidental : Alaska, Canada, baie de Baffin ; bordé au sud par le 66e parallèle
+  // (détroits de Béring et de Davis), à l'est par le Groenland.
+  ['mer-arctique-ouest', [[-179.9, 66], [-40, 66], [-40, 79.5], [-179.9, 79.5]]],
+  // Océan Arctique central : la calotte au nord de 79.5°N (entre Groenland, Svalbard, Severnaïa
+  // Zemlia et l'archipel canadien). Écrite ici en rectangle (valide à plat, pour le reste du
+  // script) ; main.js la redessine en anneau autour du pôle (voir polarCapGeometry).
+  ['mer-arctique-centre', [[-179.9, 79.5], [179.9, 79.5], [179.9, 90], [-179.9, 90]]],
 
   // Méditerranée occidentale : ne déborde plus dans le golfe de Gascogne (contour par
   // l'Espagne et la France), s'ouvre sur l'Atlantique au détroit de Gibraltar (-5.9°).
@@ -373,9 +387,10 @@ const MARITIME_ZONES = [
   ['mer-caraibes-ouest', [[-98, 7], [-76, 7], [-76, 31], [-98, 31]]],
   ['mer-caraibes-est', [[-76, 7], [-55, 7], [-55, 31], [-76, 31]]],
 
-  // Atlantique Nord-Est (côtier) : entre le trait (-20°, 66°N) → côte du Maroc (près de Safi)
-  // et les côtes d'Europe/du Maroc, jusqu'au Pas de Calais et à Gibraltar.
-  ['mer-atlantiquenord-est', [[-20, 66], [0, 66], [2, 51], [2, 50.5], [0, 45], [-2, 42.5], [-5.9, 36.3], [-5.9, 35.6], [-6, 34], [-9, 31.5]]],
+  // Atlantique Nord-Est (côtier) : à l'est d'un trait vertical partant de la côte sud de
+  // l'Islande (18.9°O), qui tourne à angle droit à 31.5°N pour rejoindre la côte du Maroc
+  // (Essaouira) ; au nord, le trait Islande → Norvège (65°N).
+  ['mer-atlantiquenord-est', [[-18.9, 63.8], [-15, 65], [13.5, 65], [2, 51], [2, 50.5], [0, 45], [-2, 42.5], [-5.9, 36.3], [-5.9, 35.6], [-6, 34], [-8.5, 31.5], [-18.9, 31.5]]],
   // Atlantique Nord central : le reste de l'ancien rectangle Nord-Est.
   ['mer-atlantiquenord-centre', [[-40, 0], [0, 0], [0, 66], [-40, 66]]],
   ['mer-atlantiquenord-ouest', [[-80, 0], [-40, 0], [-40, 66], [-80, 66]]],
@@ -392,11 +407,73 @@ const MARITIME_ZONES = [
   ['mer-indien-ouest', [[20, -60], [70, -60], [70, 30], [20, 30]]],
   ['mer-indien-est', [[70, -60], [120, -60], [120, 30], [70, 30]]],
 ];
+// Chaque case perd aussi TOUTE la terre qu'elle recouvre (Natural Earth "land", pas seulement
+// les territoires du jeu) : sans ça, une terre hors jeu (Alaska, Canaries, Féroé, petites îles
+// du Svalbard...) était peinte et découpée comme de la mer, les traits entre cases la
+// traversant. Une case s'arrête ainsi toujours sur une vraie côte. (main.js soustrait en plus
+// les territoires du jeu, déjà simplifiés, pour que les deux bords coïncident au pixel près.)
+const landTopo = loadJSON(path.join(root, 'node_modules/world-atlas/land-50m.json'));
+const landGeometry = topojson.feature(landTopo, landTopo.objects.land).features.map((f) => f.geometry);
+// Une terre qui traverse l'antiméridien (Eurasie par la Tchoukotka, île Wrangel) a, dans ces
+// données, un contour qui saute d'un bord à l'autre de la carte (de 180° à -180°) : lu tel quel
+// par polyclip (à plat), ce saut devient un trait horizontal traversant toute la planète, qui
+// découpait les cases mer en bandes. On "déplie" donc ses longitudes (continues, quitte à
+// dépasser 180°), puis on la recoupe en deux morceaux ordinaires de part et d'autre de 180°.
+// (Une terre qui fait le tour d'un pôle — l'Antarctique — ne se déplie pas : laissée telle
+// quelle, aucune case ne la touche.)
+function unwrapRing(ring) {
+  const out = [[...ring[0]]];
+  let offset = 0;
+  for (let i = 1; i < ring.length; i++) {
+    const d = ring[i][0] - ring[i - 1][0];
+    if (d > 180) offset -= 360;
+    else if (d < -180) offset += 360;
+    out.push([ring[i][0] + offset, ring[i][1]]);
+  }
+  return out;
+}
+function splitAtAntimeridian(poly) {
+  const lons = poly[0].map(([lon]) => lon);
+  if (Math.max(...lons) - Math.min(...lons) <= 180) return [poly];
+  const unwrapped = poly.map(unwrapRing);
+  const outer = unwrapped[0];
+  if (Math.abs(outer[0][0] - outer[outer.length - 1][0]) > 1) return [poly]; // fait le tour d'un pôle
+  const shift = (pieces, dx) => pieces.map((p) => p.map((ring) => ring.map(([x, y]) => [x + dx, y])));
+  const windowRing = (x0, x1) => [[[x0, -90], [x1, -90], [x1, 90], [x0, 90], [x0, -90]]];
+  return [
+    ...polyIntersection([unwrapped], windowRing(-180, 180)),
+    ...shift(polyIntersection([unwrapped], windowRing(180, 540)), -360),
+    ...shift(polyIntersection([unwrapped], windowRing(-540, -180)), 360),
+  ];
+}
+const landPolygons = landGeometry
+  .flatMap((g) => (g.type === 'Polygon' ? [g.coordinates] : g.coordinates))
+  .flatMap(splitAtAntimeridian);
+function bboxOfRing(ring) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [x, y] of ring) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  return [x0, y0, x1, y1];
+}
+const landWithBbox = landPolygons.map((poly) => ({ poly, bbox: bboxOfRing(poly[0]) }));
+const bboxesOverlap = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+
 const zonesDejaPrises = [];
 for (const [territoireId, points] of MARITIME_ZONES) {
   const candidate = [[...points, points[0]]];
-  const pieces = zonesDejaPrises.length ? polyDifference([candidate], ...zonesDejaPrises) : [candidate];
+  const bbox = bboxOfRing(points);
+  // Sauf la calotte polaire (Océan Arctique central), que main.js redessine de toute façon en
+  // simple anneau autour du pôle (polarCapGeometry) : découpée ici, elle ne serait plus ce
+  // simple rectangle qu'il sait reconnaître.
+  const isPolarCap = points.some(([, lat]) => lat >= 90);
+  const land = isPolarCap ? [] : landWithBbox.filter((l) => bboxesOverlap(bbox, l.bbox)).map((l) => [l.poly]);
+  const toRemove = [...zonesDejaPrises, ...land];
+  const pieces = toRemove.length ? polyDifference([candidate], ...toRemove) : [candidate];
   zonesDejaPrises.push([candidate]);
+  // La découpe par la terre peut reprendre des sommets de côte situés PILE sur l'antiméridien
+  // (Tchoukotka) : on les ramène à ±179.9°, même raison que la marge des bords de case.
+  for (const piece of pieces) for (const ring of piece) {
+    for (const pt of ring) pt[0] = Math.max(-179.9, Math.min(179.9, pt[0]));
+  }
   if (!pieces.length) throw new Error(`Case maritime ${territoireId} entièrement recouverte par les précédentes`);
   merged.push({
     type: 'Feature',
@@ -439,7 +516,7 @@ function cleanPiece(polygonCoords) {
   for (const dist of [0.0002, 0.001, 0.005, 0.02]) {
     try {
       const fixed = buffer(asFeature, dist, { units: 'degrees' });
-      if (fixed && countKinksOfPolygon(fixed.geometry.coordinates) === 0) return fixed.geometry.coordinates;
+      if (fixed && fixed.geometry.type === 'Polygon' && countKinksOfPolygon(fixed.geometry.coordinates) === 0) return fixed.geometry.coordinates;
     } catch { /* essaie la distance suivante */ }
   }
   for (const tolerance of [0.02, 0.08, 0.2]) {
@@ -483,13 +560,30 @@ function keepSignificantPieces(pieces) {
 const abandonedPieces = [];
 for (const feature of merged) {
   const rawPieces = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
-  const pieces = keepSignificantPieces(rawPieces);
+  // Anneaux dégénérés (moins de 4 sommets) retirés d'abord : la découpe des cases maritimes
+  // par la terre (polyDifference) peut en laisser, et @turf/simplify plante dessus.
+  const validPieces = rawPieces
+    .map((piece) => piece.filter((ring) => ring.length >= 4))
+    .filter((piece) => piece.length > 0);
+  const pieces = keepSignificantPieces(validPieces);
   const cleaned = [];
   for (const piece of pieces) {
-    const fixed = cleanPiece(piece);
-    if (fixed) cleaned.push(simplifyPieceIfValid(fixed));
-    else abandonedPieces.push(feature.properties.territoireId);
+    let fixed = null;
+    // Une case maritime sort déjà valide de la découpe polyclip (MARITIME_ZONES) : pas de
+    // réparation par gonflage (buffer), qui déformait ses immenses contours (coins arrondis).
+    const isMaritime = feature.properties.territoireId.startsWith('mer-');
+    try { fixed = isMaritime ? stripTinyHoles(piece) : cleanPiece(piece); } catch { fixed = null; }
+    if (fixed) {
+      try { cleaned.push(simplifyPieceIfValid(fixed)); } catch { cleaned.push(fixed); }
+    } else abandonedPieces.push(feature.properties.territoireId);
   }
+  // La simplification peut à son tour réduire un petit anneau à 1-2 sommets : on les retire
+  // (et le morceau entier si c'est son contour extérieur) — main.js planterait dessus.
+  const nonDegenerate = cleaned
+    .filter((piece) => piece[0] && piece[0].length >= 4)
+    .map((piece) => piece.filter((ring) => ring.length >= 4));
+  cleaned.length = 0;
+  cleaned.push(...nonDegenerate);
   if (cleaned.length > 0) {
     feature.geometry = cleaned.length === 1
       ? { type: 'Polygon', coordinates: cleaned[0] }

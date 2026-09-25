@@ -72,6 +72,7 @@ export const TERRITOIRES = [
   // (main.js) pour que leur bord côtier suive la vraie côte. Pas de ville ni d'usine. ---
   { id: 'mer-arctique-ouest', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-norvege', bloc: 'Maritime', region: 'Arctique', nom: 'Mer de Norvège', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-arctique-centre', bloc: 'Maritime', region: 'Arctique', nom: 'Océan Arctique central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-arctique-est', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
   { id: 'mer-atlantiquenord-ouest', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
