@@ -108,6 +108,30 @@ function dewrapRing(ring) {
 // à l'autre), on corrige de façon empirique : si l'aire projetée d'un morceau dépasse une
 // fraction déraisonnable du canevas entier, c'est qu'il est à l'envers, et on inverse
 // l'ordre de ses points (ce qui inverse son orientation) pour obtenir la bonne forme.
+// Les cases maritimes sont tracées à la main en traits droits SUR LA CARTE À PLAT (voir
+// scripts/build-geo.mjs). Or d3-geo relie deux sommets par le plus court chemin sur la sphère
+// (arc de grand cercle), pas en ligne droite sur la carte : un bord de 180° de large le long du
+// 66e parallèle passait ainsi par le pôle (cases arctiques écrasées, invisibles), et un bord de
+// 40° y dessinait une courbe. On insère donc des sommets intermédiaires tous les 0.5° au plus :
+// entre deux sommets aussi proches, l'arc et la ligne droite se confondent.
+const DENSIFY_STEP_DEG = 0.5;
+function densifyRing(ring) {
+  const out = [];
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [x0, y0] = ring[i];
+    const [x1, y1] = ring[i + 1];
+    const n = Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) / DENSIFY_STEP_DEG));
+    for (let k = 0; k < n; k++) out.push([x0 + ((x1 - x0) * k) / n, y0 + ((y1 - y0) * k) / n]);
+  }
+  out.push(ring[ring.length - 1]);
+  return out;
+}
+function densifyGeometry(geometry) {
+  const polys = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+  const coordinates = polys.map((rings) => rings.map(densifyRing));
+  return geometry.type === 'Polygon' ? { type: 'Polygon', coordinates: coordinates[0] } : { type: 'MultiPolygon', coordinates };
+}
+
 const CANVAS_AREA = TEX_W * TEX_H;
 function fixPieceWinding(rings) {
   const area = Math.abs(path.area({ type: 'Polygon', coordinates: rings }));
@@ -865,7 +889,7 @@ legend.open = window.matchMedia('(min-width: 700px)').matches;
 legend.innerHTML = `
   <summary>Légende</summary>
   <div class="legend-body">
-  <div><b>47 territoires</b> + <b>16 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
+  <div><b>47 territoires</b> + <b>19 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
@@ -1189,7 +1213,11 @@ function loadGameData(attempt = 1) {
 
     for (const f of geo.features) {
       const id = f.properties.territoireId;
-      canvasGeometryById.set(id, dewrapGeometry(f.geometry));
+      // Densifié AVANT le contrôle d'orientation de dewrapGeometry (fixPieceWinding), qui mesure
+      // l'aire de la forme telle que d3-geo la voit : sans sommets intermédiaires, cette aire
+      // est celle de la forme déformée par les arcs de grand cercle, pas de la vraie case.
+      const raw = TERRITOIRE_PAR_ID[id]?.type === 'maritime' ? densifyGeometry(f.geometry) : f.geometry;
+      canvasGeometryById.set(id, dewrapGeometry(raw));
     }
     computeDisplayGeometry();
     for (const t of TERRITOIRES) {

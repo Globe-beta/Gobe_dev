@@ -25,6 +25,7 @@ import kinks from '@turf/kinks';
 import truncate from '@turf/truncate';
 import buffer from '@turf/buffer';
 import area from '@turf/area';
+import { difference as polyDifference } from 'polyclip-ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -338,53 +339,70 @@ for (const [territoireId, feats] of Object.entries(byTerritoire)) {
 
 // ---- 3.5 Cases maritimes ----
 // Pas de source Natural Earth pour la mer : chaque grand ensemble (océan/mer — une région de
-// jeu, voir data/territoires.js) est directement subdivisé ici en deux cases mer simples,
-// rectangulaires (Ouest/Est), dessinées à la main (jamais une référence géographique précise —
-// juste une zone candidate). Deux cases voisines d'un même ensemble sont déjà des rectangles
-// disjoints qui se touchent pile à leur frontière commune (ex. -40° pour "Atlantique Nord") :
-// pas besoin de les partager géométriquement (Voronoï) au chargement, juste soustraire la terre
-// qui recouvre chacune (main.js, computeDisplayGeometry) pour que son bord côtier suive la
-// vraie côte.
+// jeu, voir data/territoires.js) est subdivisé ici à la main en cases mer, chacune une zone
+// candidate faite de traits droits (sur la carte à plat) dont main.js soustrait ensuite la
+// terre (computeDisplayGeometry) pour que son bord côtier suive la vraie côte. Un contour peut
+// donc passer librement par la terre : seul compte le tracé de ses bords EN MER.
 //
-// Le Pacifique Nord/Sud n'a plus besoin du contournement de l'antiméridien (deux anneaux dans
-// UNE MultiPolygon) utilisé avant que les deux moitiés ne deviennent des cases séparées : ce
-// sont maintenant deux features indépendantes ("...-ouest" reste sous 180°, "...-est" reste
-// au-dessus de -180°), chacune un simple Polygon qui ne traverse rien — voir cependant la marge
-// de 179.9°/-179.9° ci-dessous, toujours nécessaire sur le bord extérieur.
-const MARITIME_BOXES = {
-  // Bord extérieur à 179.9°/-179.9° plutôt que pile ±180° : un sommet EXACTEMENT sur
-  // l'antiméridien fait basculer le pré-découpage antiméridien de d3-geo (utilisé plus tard,
-  // dans main.js) dans un cas limite qui produit un anneau dégénéré (planté constaté : "invalid
-  // polygon, fewer than 4 points" pendant la simplification). Écart invisible à l'échelle du
-  // plateau (~11 km à l'équateur) entre "...-Ouest" et "...-Est", qui restent deux territoires
-  // distincts de toute façon (pas de partage géométrique à assurer entre eux à cette couture).
-  'mer-arctique-ouest': [[-179.9, 66], [0, 66], [0, 90], [-179.9, 90]],
-  'mer-arctique-est': [[0, 66], [179.9, 66], [179.9, 90], [0, 90]],
+// Les zones sont listées par PRIORITÉ : chacune perd ce que recouvrent déjà les précédentes.
+// Une mer intérieure (ex. Mer du Nord et Baltique) se découpe ainsi simplement dans le grand
+// rectangle d'océan qui l'englobe, sans avoir à suivre ses côtes à la main, et deux cases ne
+// se chevauchent jamais en mer (la Mer des Caraïbes, par exemple, sort de l'Atlantique
+// Nord-Ouest au lieu d'y être en double).
+//
+// Bord extérieur à 179.9°/-179.9° plutôt que pile ±180° : un sommet EXACTEMENT sur
+// l'antiméridien fait basculer le pré-découpage antiméridien de d3-geo (main.js) dans un cas
+// limite qui produit un anneau dégénéré ("invalid polygon, fewer than 4 points" pendant la
+// simplification). Écart invisible à l'échelle du plateau (~11 km à l'équateur).
+const MARITIME_ZONES = [
+  // Mer du Nord et Baltique : fermée au nord par un trait nord de l'Écosse → côte norvégienne,
+  // et au sud-ouest par le Pas de Calais ; le reste du contour passe par les terres.
+  ['mer-nord-baltique', [[-3.3, 58.5], [5.2, 61.0], [7.5, 60.8], [12, 63.5], [15, 66.5], [26, 66.3], [31, 64], [33, 58], [25, 53], [12, 52.5], [6, 52.5], [3, 50.5], [1.75, 50.8], [1.2, 51.15], [-1, 51.5], [-2.5, 53], [-2.5, 54.5], [-3.5, 55.6], [-4.3, 56.5], [-4.8, 57.6]]],
+  // Mer de Norvège : du méridien 0° jusqu'au trait pôle Nord → côte nord de la Norvège (29.5°E,
+  // sur la péninsule de Varanger, juste avant la frontière russe : la Norvège reste ainsi
+  // bordée, à l'est de ce trait, par l'Arctique oriental qui longe la Russie).
+  ['mer-norvege', [[0, 90], [29.5, 90], [29.5, 70.35], [26, 69.3], [20, 58], [0, 58]]],
+  ['mer-arctique-est', [[26, 66], [179.9, 66], [179.9, 90], [29.5, 90], [29.5, 70.35], [26, 69.3]]],
+  ['mer-arctique-ouest', [[-179.9, 66], [0, 66], [0, 90], [-179.9, 90]]],
 
-  'mer-atlantiquenord-ouest': [[-80, 0], [-40, 0], [-40, 66], [-80, 66]],
-  'mer-atlantiquenord-est': [[-40, 0], [0, 0], [0, 66], [-40, 66]],
+  // Méditerranée occidentale : ne déborde plus dans le golfe de Gascogne (contour par
+  // l'Espagne et la France), s'ouvre sur l'Atlantique au détroit de Gibraltar (-5.9°).
+  ['mer-mediterranee-ouest', [[-5.9, 30], [15, 30], [15, 46], [3, 46], [0, 43.5], [-2, 42.5], [-5.9, 36.3]]],
+  ['mer-mediterranee-est', [[15, 30], [36, 30], [36, 46], [15, 46]]],
 
-  'mer-atlantiquesud-ouest': [[-70, -60], [-25, -60], [-25, 0], [-70, 0]],
-  'mer-atlantiquesud-est': [[-25, -60], [20, -60], [20, 0], [-25, 0]],
+  ['mer-caraibes-ouest', [[-98, 7], [-76, 7], [-76, 31], [-98, 31]]],
+  ['mer-caraibes-est', [[-76, 7], [-55, 7], [-55, 31], [-76, 31]]],
 
-  'mer-pacifiquenord-ouest': [[120, 0], [179.9, 0], [179.9, 66], [120, 66]],
-  'mer-pacifiquenord-est': [[-179.9, 0], [-100, 0], [-100, 66], [-179.9, 66]],
+  // Atlantique Nord-Est (côtier) : entre le trait (-20°, 66°N) → côte du Maroc (près de Safi)
+  // et les côtes d'Europe/du Maroc, jusqu'au Pas de Calais et à Gibraltar.
+  ['mer-atlantiquenord-est', [[-20, 66], [0, 66], [2, 51], [2, 50.5], [0, 45], [-2, 42.5], [-5.9, 36.3], [-5.9, 35.6], [-6, 34], [-9, 31.5]]],
+  // Atlantique Nord central : le reste de l'ancien rectangle Nord-Est.
+  ['mer-atlantiquenord-centre', [[-40, 0], [0, 0], [0, 66], [-40, 66]]],
+  ['mer-atlantiquenord-ouest', [[-80, 0], [-40, 0], [-40, 66], [-80, 66]]],
 
-  'mer-pacifiquesud-ouest': [[120, -60], [179.9, -60], [179.9, 0], [120, 0]],
-  'mer-pacifiquesud-est': [[-179.9, -60], [-70, -60], [-70, 0], [-179.9, 0]],
+  ['mer-atlantiquesud-ouest', [[-70, -60], [-25, -60], [-25, 0], [-70, 0]]],
+  ['mer-atlantiquesud-est', [[-25, -60], [20, -60], [20, 0], [-25, 0]]],
 
-  'mer-indien-ouest': [[20, -60], [70, -60], [70, 30], [20, 30]],
-  'mer-indien-est': [[70, -60], [120, -60], [120, 30], [70, 30]],
+  ['mer-pacifiquenord-ouest', [[120, 0], [179.9, 0], [179.9, 66], [120, 66]]],
+  ['mer-pacifiquenord-est', [[-179.9, 0], [-100, 0], [-100, 66], [-179.9, 66]]],
 
-  'mer-mediterranee-ouest': [[-6, 30], [15, 30], [15, 46], [-6, 46]],
-  'mer-mediterranee-est': [[15, 30], [36, 30], [36, 46], [15, 46]],
+  ['mer-pacifiquesud-ouest', [[120, -60], [179.9, -60], [179.9, 0], [120, 0]]],
+  ['mer-pacifiquesud-est', [[-179.9, -60], [-70, -60], [-70, 0], [-179.9, 0]]],
 
-  'mer-caraibes-ouest': [[-98, 7], [-76, 7], [-76, 31], [-98, 31]],
-  'mer-caraibes-est': [[-76, 7], [-55, 7], [-55, 31], [-76, 31]],
-};
-for (const [territoireId, box] of Object.entries(MARITIME_BOXES)) {
-  const ring = [...box, box[0]];
-  merged.push({ type: 'Feature', properties: { territoireId }, geometry: { type: 'Polygon', coordinates: [ring] } });
+  ['mer-indien-ouest', [[20, -60], [70, -60], [70, 30], [20, 30]]],
+  ['mer-indien-est', [[70, -60], [120, -60], [120, 30], [70, 30]]],
+];
+const zonesDejaPrises = [];
+for (const [territoireId, points] of MARITIME_ZONES) {
+  const candidate = [[...points, points[0]]];
+  const pieces = zonesDejaPrises.length ? polyDifference([candidate], ...zonesDejaPrises) : [candidate];
+  zonesDejaPrises.push([candidate]);
+  if (!pieces.length) throw new Error(`Case maritime ${territoireId} entièrement recouverte par les précédentes`);
+  merged.push({
+    type: 'Feature',
+    properties: { territoireId },
+    geometry: pieces.length === 1 ? { type: 'Polygon', coordinates: pieces[0] } : { type: 'MultiPolygon', coordinates: pieces },
+  });
 }
 
 // ---- 4. Nettoyage et simplification, île par île ----

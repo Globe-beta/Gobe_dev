@@ -71,10 +71,13 @@ export const TERRITOIRES = [
   // partage géométrique (Voronoï) entre elles, juste soustraire la terre qui les recouvre
   // (main.js) pour que leur bord côtier suive la vraie côte. Pas de ville ni d'usine. ---
   { id: 'mer-arctique-ouest', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-norvege', bloc: 'Maritime', region: 'Arctique', nom: 'Mer de Norvège', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-arctique-est', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
   { id: 'mer-atlantiquenord-ouest', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantiquenord-centre', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-atlantiquenord-est', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-nord-baltique', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Mer du Nord et Baltique', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
   { id: 'mer-atlantiquesud-ouest', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique Sud-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-atlantiquesud-est', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique Sud-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
