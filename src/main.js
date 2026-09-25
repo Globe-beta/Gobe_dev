@@ -48,6 +48,8 @@ const RESERVE_ITEMS = [
   { key: 'usines', label: 'Usines', initial: 10, svg: FACTORY_ICON_SVG },
   { key: 'ports', label: 'Ports', initial: 10,
     svg: '<svg viewBox="0 0 24 24" fill="none" stroke="#1a1d24" stroke-width="2.6" stroke-linecap="round"><circle cx="12" cy="5" r="2.4"/><path d="M12 7.5V21M7.5 11h9M4 13.5a8 8 0 0016 0"/></svg>' },
+  { key: 'bases', label: 'Bases militaires', initial: 5,
+    svg: '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="11.2" y="2" width="1.6" height="12"/><path d="M12.8 2.5h6l-1.8 2.2 1.8 2.2h-6z"/><path fill-rule="evenodd" d="M3 22V12h3v2h2v-2h3v2h2v-2h3v2h2v-2h3v10zM10 22v-3a2 2 0 014 0v3z"/></svg>' },
 ];
 
 // Un symbole par type de ressource (celles listées dans TERRITOIRES[].ressources), affiché
