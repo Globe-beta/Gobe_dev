@@ -253,31 +253,6 @@ html, body {
 }
 .panel-toast.show { opacity: 1; }
 
-.invade-bar {
-  position: absolute;
-  bottom: max(12px, env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%) translateY(12px);
-  z-index: 9998; /* au-dessus de la légende (9996), qui peut être dépliée juste à côté */
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--panel);
-  border: 1px solid #ffe066;
-  padding: 10px 14px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 14px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s, transform 0.2s;
-  white-space: nowrap;
-}
-.invade-bar.show {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateX(-50%) translateY(0);
-}
 
 /* Réserve du joueur actif (voir reservePanel) : colonne à droite, placée par JS juste sous la
    liste des régions (placeRegionLegend). Fond opaque et z-index au-dessus des marqueurs du
@@ -326,4 +301,186 @@ html, body {
   .reserve-panel { gap: 4px; padding: 6px 4px; }
   .reserve-icon { width: 34px; height: 34px; border-width: 2px; }
   .reserve-count { font-size: 12px; }
+}
+
+/* ---------- Mise en place de la partie (voir renderSetupCard / renderInfoCard) ---------- */
+/* Dock en bas au centre : fiche du territoire touché au-dessus, carte de l'étape en cours
+   dessous. Au-dessus des marqueurs du globe et de la légende, sous les menus du haut. */
+.dock {
+  position: fixed;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 16px));
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.dock-card {
+  pointer-events: auto;
+  background: #0f121c;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.btn-primary { background: #ffe066; color: #1a1d24; border-color: #ffe066; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.setup-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.marche { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.marche-item { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
+.marche-item.locked { opacity: 0.55; }
+.res-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+  vertical-align: middle;
+}
+.res-icon svg { width: 62%; height: 62%; }
+.setup-title { font-weight: 700; font-size: 14px; margin: 2px 0 4px; }
+.setup-text { color: var(--text-dim); margin-bottom: 8px; }
+.setup-text b { color: var(--text); }
+.setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.joueur-tag { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; color: var(--text); white-space: nowrap; }
+.joueur-tag .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+.ordre { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 6px; font-size: 12px; }
+.ordre-item { padding: 2px 6px; border-radius: 6px; }
+.ordre-item.current { background: rgba(255, 224, 102, 0.18); outline: 1px solid #ffe066; }
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #ffe066;
+  color: #1a1d24;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.puissances { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.puissance-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  background: #171b28;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.puissance-card:hover:not(:disabled) { border-color: #ffe066; }
+.puissance-card.prise { border-color: var(--c); background: color-mix(in srgb, var(--c) 22%, #171b28); cursor: default; }
+.puissance-nom { font-weight: 700; font-size: 14px; }
+.puissance-villes { font-size: 11px; color: var(--text-dim); }
+.ressources-choix { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.ressource-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  min-width: 84px;
+  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  background: #171b28;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ressource-btn.chosen { border-color: var(--c); }
+.ressource-btn.locked { opacity: 0.45; cursor: not-allowed; filter: grayscale(1); }
+.ressource-rond {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid #8a8f9c;
+}
+.ressource-rond svg { width: 60%; height: 60%; }
+.ressource-rond .jeton, .poi-token {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--c);
+  border: 2px solid #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+}
+.lock-note { font-size: 10px; color: var(--text-dim); }
+.info-card { position: relative; }
+.info-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.info-title { font-weight: 700; font-size: 15px; padding-right: 24px; margin-bottom: 2px; }
+.info-sub { color: var(--text-dim); margin-bottom: 6px; }
+.info-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 3px; }
+.info-note { margin-top: 6px; color: var(--text-dim); font-style: italic; }
+.player-chip .rang { font-weight: 700; color: #ffe066; }
+.player-chip .rang:empty { display: none; }
+
+/* Richesse du joueur actif, en tête de sa réserve. */
+.reserve-wealth { display: flex; flex-direction: column; align-items: center; font-weight: 700; font-size: 13px; color: var(--text); }
+.reserve-wealth .coin {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #f2c94c;
+  color: #5a4300;
+  font-size: 13px;
+}
+
+/* Slot Industrie occupé : carré plein à la couleur du joueur, icône en blanc. */
+.poi-marker--factory.occupied > svg { fill: #fff; }
+.poi-resource-icon { position: relative; }
+/* Zoomé (voir setModels3dVisible) : la maquette 3D remplace l'icône au même endroit ; seule
+   l'icône disparaît, les ressources et leur jeton restent affichés dessous. */
+.zoom-3d .poi-marker.has-3d { background: transparent !important; border-color: transparent !important; box-shadow: none; }
+.zoom-3d .poi-marker.has-3d > svg { visibility: hidden; }
+
+@media (max-width: 699px) {
+  /* Sur téléphone : ancré à gauche, arrêté avant la colonne de réserve (à droite), et
+     au-dessus du bouton "Légende" (en bas à gauche). */
+  .dock { bottom: 64px; left: 8px; transform: none; width: calc(100vw - 16px - 70px); }
+  .puissances { grid-template-columns: 1fr; }
+  .puissance-card { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 10px; }
 }

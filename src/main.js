@@ -7,13 +7,15 @@ import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import polylabel from 'polylabel';
 import './style.css';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
+import { CONFIG, COULEURS_JOUEURS, PUISSANCES, ageEnChiffresRomains } from './config.js';
+import {
+  nouvellePartie, joueurCourant, tirerOrdre, choisirPuissance, puissancePrisePar,
+  territoiresPourAtelier, ressourcesPourAtelier, peutConfirmerAtelier, placerAtelier,
+} from './partie.js';
+import { construireVille, construireUsine } from './models3d.js';
 
-const PLAYERS = [
-  { name: 'Joueur 1', color: '#e63946' },
-  { name: 'Joueur 2', color: '#457b9d' },
-  { name: 'Joueur 3', color: '#2a9d8f' },
-  { name: 'Joueur 4', color: '#f4a261' },
-];
+// Joueurs de la partie : leur nombre vient de la configuration (src/config.js).
+const PLAYERS = Array.from({ length: CONFIG.nbJoueurs }, (_, i) => ({ name: `Joueur ${i + 1}`, color: COULEURS_JOUEURS[i] }));
 const MARKER_NEUTRAL = '#8a8f9c'; // liseré des marqueurs ville/usine non attribués
 
 // Cases maritimes : contrairement à la terre (déjà visible via la texture satellite en
@@ -719,6 +721,7 @@ let baseCanvas = null;
 let baseCtx = null;
 let liveCanvas = null;
 let liveCtx = null;
+let bordersCanvas = null;
 let globeTexture = null;
 
 // Épaisseur des frontières de région dans l'image de sortie (rayon, en px de texture, du
@@ -845,20 +848,24 @@ function drawBaseCanvas() {
     baseCtx.fill('evenodd');
   }
 
-  // Frontières de tous les territoires, dessinées une seule fois : elles ne changent
-  // jamais, seul le remplissage (attribué/sélectionné) est redessiné ensuite.
-  baseCtx.strokeStyle = 'rgba(0,0,0,0.9)';
-  baseCtx.lineWidth = TEX_W * 0.0006;
+  // Frontières sur un calque À PART (bordersCanvas), redessiné PAR-DESSUS la couleur des
+  // joueurs (redrawLive) : un territoire pris garde ainsi ses frontières bien visibles, dans
+  // leurs couleurs habituelles. Calculé une seule fois : les frontières ne changent jamais.
+  bordersCanvas = document.createElement('canvas');
+  bordersCanvas.width = TEX_W;
+  bordersCanvas.height = TEX_H;
+  const bordersCtx = bordersCanvas.getContext('2d');
+  bordersCtx.strokeStyle = 'rgba(0,0,0,0.9)';
+  bordersCtx.lineWidth = TEX_W * 0.0006;
   for (const mp of displayGeometryById.values()) {
-    baseCtx.beginPath();
-    strokePixelPathWithoutTextureEdges(baseCtx, mp);
-    baseCtx.stroke();
+    bordersCtx.beginPath();
+    strokePixelPathWithoutTextureEdges(bordersCtx, mp);
+    bordersCtx.stroke();
   }
-
   // Frontières extérieures des régions, en couleur (une par région), tracées par-dessus
   // les frontières de territoire — jamais les frontières internes entre deux territoires
   // d'une même région (voir computeRegionBorderOverlay).
-  if (regionBorderOverlay) baseCtx.drawImage(regionBorderOverlay, 0, 0);
+  if (regionBorderOverlay) bordersCtx.drawImage(regionBorderOverlay, 0, 0);
 
   liveCanvas = document.createElement('canvas');
   liveCanvas.width = TEX_W;
@@ -882,14 +889,36 @@ function redrawLive() {
     liveCtx.fill('evenodd');
   };
 
-  for (const [id, p] of Object.entries(ownership)) {
-    paint(id, PLAYERS[p].color);
+  // Couleur du joueur en transparence : le relief (image satellite) reste lisible dessous.
+  for (const [id, p] of Object.entries(partie.proprietaire)) {
+    paint(id, colorWithAlpha(PLAYERS[p].color, 0.45));
   }
-  if (selectedId) paint(selectedId, '#ffe066');
+  // Étape "atelier de départ" : seuls les territoires du joueur courant qui ont un slot
+  // Industrie libre sont mis en surbrillance ; celui qu'il a choisi, plus fort.
+  const surbrillance = territoiresEnSurbrillance();
+  for (const id of surbrillance) paint(id, id === atelierChoix.territoireId ? 'rgba(255,224,102,0.8)' : 'rgba(255,224,102,0.45)');
+  if (selectedId && !surbrillance.includes(selectedId)) paint(selectedId, 'rgba(255,224,102,0.55)');
+
+  if (bordersCanvas) liveCtx.drawImage(bordersCanvas, 0, 0);
+  // Contour jaune épais autour des territoires en surbrillance, par-dessus les frontières.
+  liveCtx.strokeStyle = '#ffe066';
+  liveCtx.lineWidth = TEX_W * 0.0016;
+  for (const id of surbrillance) {
+    const mp = displayGeometryById.get(id);
+    if (!mp) continue;
+    liveCtx.beginPath();
+    strokePixelPathWithoutTextureEdges(liveCtx, mp);
+    liveCtx.stroke();
+  }
 
   drawLabels(liveCtx);
 
   globeTexture.needsUpdate = true;
+}
+
+function colorWithAlpha(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
 // Cherche quel territoire contient le point (lat, lng) touché sur le globe. On projette le
@@ -904,14 +933,25 @@ function findTerritoireAt(lat, lng) {
   return null;
 }
 
-// territoireId -> index de joueur (0-3) | undefined si non attribué
-const ownership = {};
-let activePlayer = 0;
-// Réserve propre à chaque joueur (voir RESERVE_ITEMS) : { soldats: 20, navires: 20, … }.
+// Réserve de départ de chaque joueur (voir RESERVE_ITEMS) : { soldats: 20, navires: 20, … }.
 const initialReserve = () => Object.fromEntries(RESERVE_ITEMS.map((item) => [item.key, item.initial]));
-const reserves = PLAYERS.map(initialReserve);
-// Territoire actuellement touché, en attente de confirmation ("Envahir") | null si aucun.
+// État de la partie (voir src/partie.js) : ordre de jeu, propriétaires des territoires, villes,
+// usines, régions intégrées, réserves, richesse, marché, Âge et round. Rien n'est pré-rempli :
+// tout part des constantes de src/config.js.
+let partie = nouvellePartie(initialReserve());
+// Joueur actif une fois la mise en place terminée (phase 'jeu'). Pendant la mise en place,
+// c'est l'ordre de jeu tiré qui décide (joueurCourant).
+let activePlayer = 0;
+function joueurActif() {
+  return partie.phase === 'puissances' || partie.phase === 'atelier' ? joueurCourant(partie) : activePlayer;
+}
+// Choix en cours à l'étape "atelier de départ", tant qu'il n'est pas confirmé.
+let atelierChoix = { territoireId: null, ressource: null };
+// Territoire touché dont la fiche est affichée | null.
 let selectedId = null;
+function territoiresEnSurbrillance() {
+  return partie.phase === 'atelier' ? territoiresPourAtelier(partie, joueurCourant(partie)) : [];
+}
 
 // Régions -> liste de territoireId (pour la détection "région intégrée")
 const territoiresParRegion = {};
@@ -920,7 +960,7 @@ for (const t of TERRITOIRES) {
 }
 
 function markerColorForTerritoire(id) {
-  const p = ownership[id];
+  const p = partie.proprietaire[id];
   return p === undefined ? MARKER_NEUTRAL : PLAYERS[p].color;
 }
 
@@ -928,14 +968,14 @@ function computeScores() {
   const scores = PLAYERS.map(() => ({ territoires: 0, regions: 0, villes: 0 }));
 
   for (const t of TERRITOIRES) {
-    const owner = ownership[t.id];
+    const owner = partie.proprietaire[t.id];
     if (owner === undefined) continue;
     scores[owner].territoires += 1;
     if (t.ville) scores[owner].villes += 1;
   }
 
   for (const [, ids] of Object.entries(territoiresParRegion)) {
-    const owners = ids.map((id) => ownership[id]);
+    const owners = ids.map((id) => partie.proprietaire[id]);
     const first = owners[0];
     if (first !== undefined && owners.every((o) => o === first)) {
       scores[first].regions += 1;
@@ -1006,8 +1046,14 @@ const chips = PLAYERS.map((p, i) => {
   const chip = document.createElement('button');
   chip.className = 'player-chip btn';
   chip.style.border = '2px solid transparent';
-  chip.innerHTML = `<span class="dot" style="background:${p.color}"></span> ${p.name} <span class="score">0</span>`;
-  chip.onclick = () => { activePlayer = i; renderAll(); };
+  chip.innerHTML = `<span class="rang"></span><span class="dot" style="background:${p.color}"></span> ${p.name} <span class="score">0</span>`;
+  // Changer de joueur à la main n'a de sens qu'une fois la mise en place terminée : avant,
+  // c'est l'ordre de jeu tiré qui désigne le joueur dont c'est le tour.
+  chip.onclick = () => {
+    if (partie.phase !== 'jeu') return;
+    activePlayer = i;
+    renderAll();
+  };
   topbar.appendChild(chip);
   return chip;
 });
@@ -1019,16 +1065,23 @@ topbar.appendChild(spacer);
 const nextBtn = document.createElement('button');
 nextBtn.className = 'btn';
 nextBtn.textContent = 'Joueur suivant →';
-nextBtn.onclick = () => { activePlayer = (activePlayer + 1) % PLAYERS.length; renderAll(); };
+// Tour de table dans l'ordre de jeu tiré (fixe pour toute la partie).
+nextBtn.onclick = () => {
+  const ordre = partie.ordre || PLAYERS.map((_, i) => i);
+  activePlayer = ordre[(ordre.indexOf(activePlayer) + 1) % ordre.length];
+  renderAll();
+};
 topbar.appendChild(nextBtn);
 
 const resetBtn = document.createElement('button');
 resetBtn.className = 'btn';
 resetBtn.textContent = 'Réinitialiser';
 resetBtn.onclick = () => {
-  if (!confirm('Effacer toutes les attributions de territoires et remettre les réserves à zéro ?')) return;
-  for (const k of Object.keys(ownership)) delete ownership[k];
-  reserves.forEach((r, i) => { reserves[i] = initialReserve(); });
+  if (!confirm('Recommencer une nouvelle partie depuis le début (ordre de jeu, puissances, ateliers) ?')) return;
+  partie = nouvellePartie(initialReserve());
+  activePlayer = 0;
+  atelierChoix = { territoireId: null, ressource: null };
+  selectedId = null;
   renderAll();
 };
 topbar.appendChild(resetBtn);
@@ -1072,7 +1125,7 @@ legend.innerHTML = `
   <summary>Légende</summary>
   <div class="legend-body">
   <div><b>47 territoires</b> + <b>20 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
-  <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour le sélectionner, puis "Envahir" pour l'attribuer au joueur actif</div>
+  <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour voir sa fiche ; la mise en place de la partie se fait par étapes dans le panneau du bas</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Denrées']}</span> Denrées</div>
@@ -1094,6 +1147,7 @@ const reservePanel = document.createElement('div');
 reservePanel.className = 'reserve-panel';
 reservePanel.innerHTML = `
   <div class="reserve-title"><span class="dot"></span><span class="name"></span></div>
+  <div class="reserve-wealth" title="Richesse"><span class="coin">$</span><span class="reserve-richesse"></span></div>
   ${RESERVE_ITEMS.map((item) => `
     <div class="reserve-item" data-key="${item.key}" title="${item.label}">
       <span class="reserve-icon">${item.svg}</span>
@@ -1104,10 +1158,12 @@ reservePanel.innerHTML = `
 app.appendChild(reservePanel);
 placeRegionLegend();
 function renderReservePanel() {
-  const player = PLAYERS[activePlayer];
-  const reserve = reserves[activePlayer];
+  const joueur = joueurActif() ?? 0;
+  const player = PLAYERS[joueur];
+  const reserve = partie.joueurs[joueur].reserve;
   reservePanel.style.setProperty('--player-color', player.color);
   reservePanel.querySelector('.reserve-title .name').textContent = player.name;
+  reservePanel.querySelector('.reserve-richesse').textContent = partie.joueurs[joueur].richesse;
   for (const el of reservePanel.querySelectorAll('.reserve-item')) {
     const n = reserve[el.dataset.key];
     el.querySelector('.reserve-count').textContent = n;
@@ -1126,21 +1182,190 @@ function showToast(msg) {
   toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
 }
 
-// Barre de confirmation d'invasion : touchez un territoire pour le sélectionner (surbrillance
-// jaune) sans l'attribuer tout de suite, puis confirmez avec "Envahir". Ça sépare le geste
-// tactile (imprécis, surtout pendant une rotation du globe) de l'attribution elle-même : une
-// sélection déclenchée par erreur ne coûte rien, seule une confirmation explicite compte.
-const invadeBar = document.createElement('div');
-invadeBar.className = 'invade-bar';
-const invadeLabel = document.createElement('span');
-const invadeBtn = document.createElement('button');
-invadeBtn.className = 'btn';
-invadeBtn.textContent = 'Envahir';
-const cancelBtn = document.createElement('button');
-cancelBtn.className = 'btn';
-cancelBtn.textContent = 'Annuler';
-invadeBar.append(invadeLabel, invadeBtn, cancelBtn);
-app.appendChild(invadeBar);
+// ---------- Mise en place de la partie et fiches de territoire ----------
+// Un "dock" en bas de l'écran empile deux cartes : la fiche du territoire touché (au-dessus,
+// refermable) et la carte de l'étape en cours de la mise en place (ordre de jeu → choix des
+// puissances → atelier de départ), puis le résumé de la partie une fois celle-ci lancée.
+const dock = document.createElement('div');
+dock.className = 'dock';
+const infoCard = document.createElement('div');
+infoCard.className = 'dock-card info-card';
+const setupCard = document.createElement('div');
+setupCard.className = 'dock-card setup-card';
+dock.append(infoCard, setupCard);
+app.appendChild(dock);
+
+const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const typeRessource = (r) => (typeof r === 'string' ? r : r.type);
+const joueurTag = (i) => `<span class="joueur-tag" style="--c:${PLAYERS[i].color}"><span class="dot"></span>${PLAYERS[i].name}</span>`;
+const iconeRessource = (type) => `<span class="res-icon">${RESOURCE_ICON_SVG[type] || ''}</span>`;
+
+function ligneMarche() {
+  const ressources = ['Énergie', 'Minerais', 'Denrées', 'Terres rares'].map((type) => {
+    const verrou = type === 'Terres rares' && partie.age < CONFIG.ageDeblocageTerresRares;
+    return `<span class="marche-item${verrou ? ' locked' : ''}" title="${type}${verrou ? ` — débloquées à l'Âge ${ageEnChiffresRomains(CONFIG.ageDeblocageTerresRares)}` : ''}">${iconeRessource(type)}${partie.marche[type]}${verrou ? ' 🔒' : ''}</span>`;
+  }).join('');
+  return `<div class="setup-meta"><span>Âge ${ageEnChiffresRomains(partie.age)} · Round ${partie.round}</span><span class="marche">Marché ${ressources}</span></div>`;
+}
+
+function ligneOrdre() {
+  if (!partie.ordre) return '';
+  return `<div class="ordre">${partie.ordre.map((j, k) => `<span class="ordre-item${partie.phase !== 'jeu' && k === partie.tour ? ' current' : ''}"><b>${k + 1}.</b> ${joueurTag(j)}</span>`).join('')}</div>`;
+}
+
+function renderSetupCard() {
+  const tourDe = (j) => `Au tour de ${joueurTag(j)}`;
+  let html = ligneMarche();
+  if (partie.phase === 'ordre') {
+    html += `<div class="setup-title">Étape 1 — Ordre de jeu</div>
+      <div class="setup-text">L'ordre est tiré au hasard et restera le même pour toute la partie.</div>
+      <div class="setup-actions"><button class="btn btn-primary" data-action="tirer">Tirer l'ordre de jeu</button></div>`;
+  } else if (partie.phase === 'puissances') {
+    html += ligneOrdre();
+    html += `<div class="setup-title">Étape 2 — Choix des puissances</div><div class="setup-text">${tourDe(joueurCourant(partie))} : choisissez votre puissance.</div>`;
+    html += `<div class="puissances">${PUISSANCES.map((pu) => {
+      const pris = puissancePrisePar(partie, pu.id);
+      const villes = pu.villesDepart.map((id) => TERRITOIRE_PAR_ID[id]?.ville?.nom).filter(Boolean).join(' · ');
+      return `<button class="puissance-card${pris !== null ? ' prise' : ''}" data-puissance="${pu.id}" ${pris !== null ? 'disabled' : ''} style="${pris !== null ? `--c:${PLAYERS[pris].color}` : ''}">
+        <span class="puissance-nom">${pu.nom}</span>
+        <span class="puissance-villes">★ ${villes}</span>
+        ${pris !== null ? `<span class="puissance-owner">${joueurTag(pris)}</span><span class="badge">Région intégrée</span>` : ''}
+      </button>`;
+    }).join('')}</div>`;
+  } else if (partie.phase === 'atelier') {
+    const j = joueurCourant(partie);
+    html += ligneOrdre();
+    html += `<div class="setup-title">Étape 3 — Atelier de départ</div>`;
+    if (!atelierChoix.territoireId) {
+      const possibles = territoiresPourAtelier(partie, j);
+      html += `<div class="setup-text">${tourDe(j)} : touchez un de vos territoires en surbrillance (slot Industrie libre) pour y poser votre usine gratuite.</div>
+        <div class="setup-actions">${possibles.map((id) => `<button class="btn" data-territoire="${id}">${escapeHtml(TERRITOIRE_PAR_ID[id].nom)}</button>`).join('')}</div>`;
+    } else {
+      const t = TERRITOIRE_PAR_ID[atelierChoix.territoireId];
+      const ressources = ressourcesPourAtelier(partie, t.id);
+      html += `<div class="setup-text">${tourDe(j)} — <b>${escapeHtml(t.nom)}</b> : choisissez la ressource à produire. Capacité de l'Atelier : ${CONFIG.capaciteAtelier} jeton.</div>
+        <div class="ressources-choix">${ressources.map((r) => `
+          <button class="ressource-btn${r.verrouillee ? ' locked' : ''}${atelierChoix.ressource === r.type ? ' chosen' : ''}" data-ressource="${r.type}" ${r.verrouillee ? 'disabled' : ''} style="--c:${PLAYERS[j].color}">
+            <span class="ressource-rond">${RESOURCE_ICON_SVG[r.type] || ''}${atelierChoix.ressource === r.type ? '<span class="jeton"></span>' : ''}</span>
+            <span>${r.type}</span>
+            ${r.verrouillee ? `<span class="lock-note">🔒 Débloquée à l'Âge ${ageEnChiffresRomains(CONFIG.ageDeblocageTerresRares)}</span>` : ''}
+          </button>`).join('')}</div>
+        <div class="setup-actions">
+          <button class="btn btn-primary" data-action="confirmer-atelier" ${peutConfirmerAtelier(partie, atelierChoix.territoireId, atelierChoix.ressource) ? '' : 'disabled'}>Confirmer</button>
+          <button class="btn" data-action="annuler-atelier">Annuler</button>
+        </div>`;
+    }
+  } else {
+    html += ligneOrdre();
+    html += `<div class="setup-title">Mise en place terminée</div><div class="setup-text">${tourDe(activePlayer)}.</div>`;
+  }
+  setupCard.innerHTML = html;
+}
+
+setupCard.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn || btn.disabled) return;
+  if (btn.dataset.action === 'tirer') {
+    tirerOrdre(partie);
+    showToast(`Ordre de jeu : ${partie.ordre.map((j) => PLAYERS[j].name).join(' → ')}`);
+  } else if (btn.dataset.puissance) {
+    const puissance = PUISSANCES.find((pu) => pu.id === btn.dataset.puissance);
+    const joueur = joueurCourant(partie);
+    choisirPuissance(partie, puissance.id);
+    showToast(`${PLAYERS[joueur].name} prend ${puissance.nom} — région intégrée`);
+    flyToRegion(puissance.region);
+    if (partie.phase === 'atelier') flyToPlayer(joueurCourant(partie));
+  } else if (btn.dataset.territoire) {
+    choisirTerritoireAtelier(btn.dataset.territoire);
+  } else if (btn.dataset.ressource) {
+    atelierChoix.ressource = btn.dataset.ressource;
+  } else if (btn.dataset.action === 'annuler-atelier') {
+    atelierChoix = { territoireId: null, ressource: null };
+  } else if (btn.dataset.action === 'confirmer-atelier') {
+    const joueur = joueurCourant(partie);
+    const t = TERRITOIRE_PAR_ID[atelierChoix.territoireId];
+    placerAtelier(partie, atelierChoix.territoireId, atelierChoix.ressource);
+    showToast(`${PLAYERS[joueur].name} : Atelier posé en ${t.nom} (${atelierChoix.ressource})`);
+    atelierChoix = { territoireId: null, ressource: null };
+    if (partie.phase === 'atelier') flyToPlayer(joueurCourant(partie));
+    else activePlayer = partie.ordre[0];
+  }
+  renderAll();
+});
+
+function choisirTerritoireAtelier(id) {
+  atelierChoix = { territoireId: id, ressource: null };
+  selectedId = null;
+}
+
+// Centre la caméra sur une région (moyenne des positions de ses territoires).
+function flyToRegion(region) {
+  const pts = (territoiresParRegion[region] || []).map((id) => labelAnchorById.get(id)).filter(Boolean)
+    .map((a) => projection.invert([a.x, a.y]));
+  if (!pts.length) return;
+  const lng = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const lat = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  world.pointOfView({ lat, lng, altitude: 1.3 }, 1200);
+}
+function flyToPlayer(joueur) {
+  const puissance = PUISSANCES.find((pu) => pu.id === partie.joueurs[joueur]?.puissance);
+  if (puissance) flyToRegion(puissance.region);
+}
+
+// Fiche d'un territoire touché : lisible par tous ; seul son propriétaire pourra y agir (actions
+// à venir). Une fois la mise en place terminée, un territoire neutre peut être envahi.
+function renderInfoCard() {
+  if (!selectedId) {
+    infoCard.style.display = 'none';
+    return;
+  }
+  const t = TERRITOIRE_PAR_ID[selectedId];
+  const owner = partie.proprietaire[t.id];
+  const integree = partie.regionsIntegrees[t.region];
+  const usine = partie.usines[t.id];
+  const ressources = (t.ressources || []).map(typeRessource);
+  const lignes = [];
+  lignes.push(`<div class="info-sub">${escapeHtml(t.region)} · ${owner === undefined ? 'Neutre' : joueurTag(owner)}${integree ? ' <span class="badge">Région intégrée</span>' : ''}</div>`);
+  if (t.type !== 'maritime') {
+    lignes.push(`<div class="info-row">Ressources : ${ressources.length ? ressources.map((r) => `${iconeRessource(r)}${r}`).join(' ') : '—'}</div>`);
+    lignes.push(`<div class="info-row">Centre urbain : ${t.ville ? `★ ${escapeHtml(t.ville.nom)}${partie.villes[t.id] !== undefined ? ` (${joueurTag(partie.villes[t.id])})` : ''}` : '—'}</div>`);
+    lignes.push(`<div class="info-row">Slot Industrie : ${t.slotIndustrie ? (usine ? `occupé — usine de ${joueurTag(usine.joueur)}, jeton ${usine.jetons.join(', ')}` : 'libre') : '—'}</div>`);
+  }
+  let actions = '';
+  const moi = joueurActif();
+  if (owner !== undefined && owner !== moi) {
+    actions = `<div class="info-note">Appartient à ${joueurTag(owner)} : consultation seulement.</div>`;
+  } else if (owner !== undefined && owner === moi) {
+    actions = '<div class="info-note">Votre territoire (actions à venir).</div>';
+  } else if (partie.phase === 'jeu' && t.type !== 'maritime') {
+    actions = `<div class="setup-actions"><button class="btn btn-primary" data-action="envahir">Envahir → ${PLAYERS[moi].name}</button></div>`;
+  }
+  infoCard.innerHTML = `<button class="info-close" data-action="fermer" aria-label="Fermer">×</button>
+    <div class="info-title">${escapeHtml(t.nom)}</div>${lignes.join('')}${actions}`;
+  infoCard.style.display = '';
+}
+
+infoCard.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  if (btn.dataset.action === 'fermer') clearSelection();
+  else if (btn.dataset.action === 'envahir' && selectedId) {
+    assignTerritoire(selectedId);
+    selectedId = null;
+    renderAll();
+  }
+});
+
+// Un territoire touché sur le globe (ou sa ville) : à l'étape de l'atelier, un territoire en
+// surbrillance du joueur courant ouvre directement le choix de ressource ; sinon, sa fiche.
+function handleTerritoryClick(id) {
+  if (partie.phase === 'atelier' && territoiresEnSurbrillance().includes(id)) {
+    choisirTerritoireAtelier(id);
+    renderAll();
+    return;
+  }
+  selectTerritoire(id);
+}
 
 function selectTerritoire(id) {
   selectedId = id;
@@ -1151,14 +1376,6 @@ function clearSelection() {
   selectedId = null;
   renderAll();
 }
-
-invadeBtn.onclick = () => {
-  if (!selectedId) return;
-  assignTerritoire(selectedId);
-  selectedId = null;
-  renderAll();
-};
-cancelBtn.onclick = clearSelection;
 
 // ---------- Détection tapotement propre vs glissement (rotation du globe) ----------
 // Un tapotement qui glisse légèrement pendant une rotation du globe pouvait quand même
@@ -1183,6 +1400,43 @@ function wasCleanTap() {
   return lastPointerWasClean;
 }
 
+// Maquettes 3D en relief (voir src/models3d.js) : une par ville possédée et par usine posée,
+// visibles seulement une fois assez zoomé (MODEL_ALT_VISIBLE) — elles remplacent alors
+// l'icône HTML au même endroit, à une taille comparable. Construites une seule fois par
+// (lieu, couleur) puis réutilisées d'un rafraîchissement à l'autre.
+const MODEL_ALT_VISIBLE = 1.0;
+const modelCache = new Map();
+let objects3d = [];
+let objects3dSignature = '';
+let models3dVisible = false;
+function refreshObjects3d() {
+  const wanted = [];
+  for (const [territoireId, joueur] of Object.entries(partie.villes)) {
+    const t = TERRITOIRE_PAR_ID[territoireId];
+    if (t?.ville) wanted.push({ key: `ville:${territoireId}:${joueur}`, lat: t.ville.lat, lon: t.ville.lon, build: () => construireVille(t.ville.nom, PLAYERS[joueur].color) });
+  }
+  for (const [territoireId, usine] of Object.entries(partie.usines)) {
+    const m = markersData.find((d) => d.type === 'factory' && d.territoireId === territoireId);
+    if (m) wanted.push({ key: `usine:${territoireId}:${usine.joueur}`, lat: m.lat, lon: m.lon, build: () => construireUsine(PLAYERS[usine.joueur].color) });
+  }
+  const signature = wanted.map((w) => w.key).join('|');
+  if (signature === objects3dSignature) return;
+  objects3dSignature = signature;
+  objects3d = wanted.map((w) => {
+    if (!modelCache.has(w.key)) modelCache.set(w.key, w.build());
+    const obj = modelCache.get(w.key);
+    obj.visible = models3dVisible;
+    return { lat: w.lat, lon: w.lon, obj };
+  });
+  world.objectsData(objects3d);
+}
+function setModels3dVisible(visible) {
+  if (visible === models3dVisible) return;
+  models3dVisible = visible;
+  for (const o of objects3d) o.obj.visible = visible;
+  document.documentElement.classList.toggle('zoom-3d', visible);
+}
+
 // ---------- Globe ----------
 let lastClickInfo = '—';
 const world = new Globe(globeEl)
@@ -1194,7 +1448,7 @@ const world = new Globe(globeEl)
     if (!wasCleanTap()) return;
     const id = findTerritoireAt(lat, lng);
     lastClickInfo = `${lat.toFixed(1)},${lng.toFixed(1)}→${id || 'aucun'}`;
-    if (id) selectTerritoire(id);
+    if (id) handleTerritoryClick(id);
     else renderAll();
   })
   .htmlLat((d) => d.lat)
@@ -1203,8 +1457,16 @@ const world = new Globe(globeEl)
   .htmlElement(buildMarkerElement)
   .onZoom(updatePoiScale);
 
+world
+  .objectLat((d) => d.lat)
+  .objectLng((d) => d.lon)
+  .objectAltitude(0.002)
+  .objectFacesSurface(true)
+  .objectThreeObject((d) => d.obj);
+
 world.pointOfView({ lat: 20, lng: 10, altitude: 2.6 }, 0);
 window.__world = world; // debug uniquement
+window.__debug = { partie: () => partie, markers: () => markersData }; // debug uniquement
 updatePoiScale(world.pointOfView());
 
 // Diagnostic : sur un appareil sous pression mémoire (tablette, beaucoup de géométrie),
@@ -1223,10 +1485,15 @@ glCanvas.addEventListener('webglcontextrestored', () => {
 
 let markersData = [];
 
+
 function buildFactoryMarker(d) {
   const marker = document.createElement('div');
-  marker.className = 'poi-marker poi-marker--factory';
+  const usine = partie.usines[d.territoireId];
+  // Slot occupé : carré plein à la couleur du joueur, et sa maquette 3D d'usine (voir
+  // objects3d) prend le relais de l'icône en zoomant.
+  marker.className = `poi-marker poi-marker--factory${usine ? ' occupied has-3d' : ''}`;
   marker.style.borderColor = markerColorForTerritoire(d.territoireId);
+  if (usine) marker.style.background = PLAYERS[usine.joueur].color;
   marker.innerHTML = FACTORY_ICON_SVG;
   // Les cercles de ressource sont des ENFANTS du carré usine (pas des marqueurs séparés avec
   // leur propre position géographique) : ils héritent ainsi de la même transformation CSS
@@ -1242,6 +1509,13 @@ function buildFactoryMarker(d) {
       icon.className = 'poi-resource-icon';
       icon.innerHTML = RESOURCE_ICON_SVG[resourceTypeOf(r)] || '';
       icon.title = resourceTypeOf(r);
+      // Jeton de production posé sur cette ressource (rond, à la couleur du joueur).
+      if (usine && usine.jetons.includes(resourceTypeOf(r))) {
+        const jeton = document.createElement('span');
+        jeton.className = 'poi-token';
+        jeton.style.background = PLAYERS[usine.joueur].color;
+        icon.appendChild(jeton);
+      }
       row.appendChild(icon);
     }
     marker.appendChild(row);
@@ -1265,11 +1539,12 @@ function buildMarkerElement(d) {
 
   if (d.type === 'city') {
     const marker = document.createElement('div');
-    marker.className = 'poi-marker';
+    // Ville possédée : sa maquette 3D (voir objects3d) prend le relais de l'icône en zoomant.
+    marker.className = `poi-marker${partie.villes[d.territoireId] !== undefined ? ' has-3d' : ''}`;
     marker.style.borderColor = markerColorForTerritoire(d.territoireId);
     marker.innerHTML = CITY_ICON_SVG;
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
-    marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; selectTerritoire(d.territoireId); };
+    marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; handleTerritoryClick(d.territoireId); };
     group.appendChild(marker);
   } else {
     group.appendChild(buildFactoryMarker(d));
@@ -1302,47 +1577,51 @@ function updatePoiScale({ altitude }) {
     scale = 1 + t * (POI_MAX_SCALE - 1);
   }
   document.documentElement.style.setProperty('--poi-scale', scale.toFixed(3));
+  setModels3dVisible(altitude < MODEL_ALT_VISIBLE);
 }
 
 // Appelée uniquement depuis le bouton "Envahir" (confirmation explicite).
 function assignTerritoire(id) {
   const region = TERRITOIRE_PAR_ID[id]?.region;
-  ownership[id] = activePlayer;
-  renderAll();
+  partie.proprietaire[id] = activePlayer;
 
   const ids = territoiresParRegion[region] || [];
-  if (ids.length && ids.every((tid) => ownership[tid] === activePlayer)) {
+  if (ids.length && ids.every((tid) => partie.proprietaire[tid] === activePlayer)) {
+    partie.regionsIntegrees[region] = { joueur: activePlayer, bonus: { ...CONFIG.bonusRegionIntegree } };
     showToast(`Région intégrée : ${region} → +3 pts pour ${PLAYERS[activePlayer].name}`);
   }
+  renderAll();
 }
 
 function renderAll() {
   if (globeTexture) redrawLive();
-  // Rafraîchit les marqueurs (nouvelle référence de tableau pour forcer le re-rendu des couleurs)
-  world.htmlElementsData([...markersData]);
+  // Rafraîchit les marqueurs : globe.gl réutilise l'élément HTML d'une donnée qu'il connaît
+  // déjà (même objet), sans rappeler buildMarkerElement — il faut donc lui passer des COPIES
+  // pour qu'il les reconstruise avec l'état à jour (couleur du propriétaire, slot occupé,
+  // jeton, maquette 3D).
+  world.htmlElementsData(markersData.map((d) => ({ ...d })));
+  refreshObjects3d();
 
   renderReservePanel();
+  renderSetupCard();
+  renderInfoCard();
 
+  const scores = computeScores();
+  const actif = joueurActif();
   chips.forEach((chip, i) => {
-    chip.style.borderColor = i === activePlayer ? '#fff' : 'transparent';
-    const scores = computeScores();
+    chip.style.borderColor = i === actif ? '#fff' : 'transparent';
     chip.querySelector('.score').textContent = scores[i].total;
+    // Rang dans l'ordre de jeu, une fois tiré.
+    chip.querySelector('.rang').textContent = partie.ordre ? `${partie.ordre.indexOf(i) + 1}.` : '';
   });
-
-  if (selectedId) {
-    const t = TERRITOIRE_PAR_ID[selectedId];
-    invadeLabel.textContent = `${t ? t.nom : selectedId} → ${PLAYERS[activePlayer].name} ?`;
-    invadeBar.classList.add('show');
-  } else {
-    invadeBar.classList.remove('show');
-  }
+  nextBtn.style.display = partie.phase === 'jeu' ? '' : 'none';
 
   // Diagnostic : liste explicitement les territoires réellement marqués "attribués", et le
   // dernier point touché avec le territoire trouvé (ou "aucun") — utile pour vérifier que
   // la détection de clic (point-in-polygon) retrouve bien le bon territoire.
   if (readyStatusBase) {
-    const owned = Object.keys(ownership);
-    statusEl.textContent = `${readyStatusBase} · clic:${lastClickInfo} · attribués(${owned.length}):${owned.join(',') || '—'}`;
+    const owned = Object.keys(partie.proprietaire);
+    statusEl.textContent = `${readyStatusBase} · clic:${lastClickInfo} · attribués(${owned.length})`;
   }
   placeRegionLegend();
 }
