@@ -168,22 +168,40 @@ export function choisirVille(partie, territoireId) {
   passerAuJoueurSuivant(partie);
 }
 
-// Étape 5 : un rail relie deux territoires VOISINS du joueur. La géométrie (qui touche qui)
-// n'est pas connue ici : main.js la fournit une fois pour toutes via definirVoisinage.
+// Étape 5 : un rail relie deux territoires voisins PAR LA TERRE (frontière terrestre commune),
+// dont au moins un appartient au joueur, l'autre étant à lui aussi ou neutre — jamais un
+// territoire d'un autre joueur. La géométrie (qui touche qui) n'est pas connue ici : main.js la
+// fournit une fois pour toutes via definirVoisinage.
 let sontVoisins = () => false;
 export function definirVoisinage(fonction) {
   sontVoisins = fonction;
 }
 
 const railExiste = (partie, a, b) => partie.rails.some((r) => (r.a === a && r.b === b) || (r.a === b && r.b === a));
+const territoiresTerrestres = TERRITOIRES.filter((t) => t.type !== 'maritime').map((t) => t.id);
 
-// Territoires du joueur qu'un rail peut relier à `depuis` (ou, sans `depuis`, ceux qui ont au
-// moins un tel voisin : premier territoire touché).
+function railAutorise(partie, joueur, a, b) {
+  if (a === b || railExiste(partie, a, b)) return false;
+  const pa = partie.proprietaire[a];
+  const pb = partie.proprietaire[b];
+  const accessible = (p) => p === undefined || p === joueur; // à lui, ou neutre
+  if (!accessible(pa) || !accessible(pb)) return false;
+  if (pa !== joueur && pb !== joueur) return false; // au moins un des deux à lui
+  return sontVoisins(a, b);
+}
+
+// Territoires qu'un rail peut relier à `depuis` ; sans `depuis`, ceux qui peuvent servir de
+// premier territoire touché (au moins un partenaire possible).
 export function territoiresPourRail(partie, joueur, depuis = null) {
-  const siens = TERRITOIRES.filter((t) => t.type !== 'maritime' && partie.proprietaire[t.id] === joueur).map((t) => t.id);
-  const relie = (a, b) => a !== b && sontVoisins(a, b) && !railExiste(partie, a, b);
-  if (depuis) return siens.filter((id) => relie(depuis, id));
-  return siens.filter((a) => siens.some((b) => relie(a, b)));
+  if (depuis) return territoiresTerrestres.filter((id) => railAutorise(partie, joueur, depuis, id));
+  const siens = territoiresTerrestres.filter((id) => partie.proprietaire[id] === joueur);
+  const premiers = new Set();
+  for (const a of siens) {
+    for (const b of territoiresTerrestres) {
+      if (railAutorise(partie, joueur, a, b)) { premiers.add(a); premiers.add(b); }
+    }
+  }
+  return territoiresTerrestres.filter((id) => premiers.has(id));
 }
 
 export function peutPoserRail(partie, a, b) {

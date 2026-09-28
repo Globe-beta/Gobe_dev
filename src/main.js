@@ -5,6 +5,7 @@ import { union as polyUnion, intersection as polyIntersection, difference as pol
 import simplify from '@turf/simplify';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import polylabel from 'polylabel';
+import { feature as topoFeature } from 'topojson-client';
 import './style.css';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
 import { CONFIG, COULEURS_JOUEURS, PUISSANCES, ageEnChiffresRomains } from './config.js';
@@ -917,9 +918,9 @@ function redrawLive() {
   }
 
   // Rails posés, puis le rail en cours de pose (pas encore confirmé), en transparence.
-  for (const r of partie.rails) drawRail(liveCtx, pointInfrastructure(r.a), pointInfrastructure(r.b), PLAYERS[r.joueur].color, 1);
+  for (const r of partie.rails) drawRail(liveCtx, railPath(r.a, r.b), PLAYERS[r.joueur].color, 1);
   if (partie.phase === 'rail' && railChoix.a && railChoix.b) {
-    drawRail(liveCtx, pointInfrastructure(railChoix.a), pointInfrastructure(railChoix.b), PLAYERS[joueurCourant(partie)].color, 0.6);
+    drawRail(liveCtx, railPath(railChoix.a, railChoix.b), PLAYERS[joueurCourant(partie)].color, 0.6);
   }
 
   drawLabels(liveCtx);
@@ -943,41 +944,283 @@ function pointInfrastructure(territoireId) {
   return labelAnchorById.get(territoireId);
 }
 
-// Voie ferrée dessinée dans la texture entre deux points : un ballast à la couleur du joueur,
-// des traverses sombres, deux rails clairs, et un petit quai rond à chaque bout.
+// Tracé d'un rail entre les infrastructures de deux territoires voisins, TOUJOURS par la terre :
+// la ligne droite entre les deux points peut couper une baie ou un bras de mer (ex. Chine du
+// Nord → Chine côtière par le golfe de Bohai). On cherche donc le plus court chemin sur une
+// grille (Dijkstra) limitée aux deux territoires — qui ne contiennent que de la terre —, en
+// évitant de longer la côte au plus près, puis on le tend en segments droits là où la ligne
+// reste sur terre, et on l'arrondit légèrement (sans jamais repasser en mer). Mémorisé par paire.
+const railPathCache = new Map();
+let landTopo = null;
+let realLandPieces = null; // [{ mp, bbox }] : terre réelle en pixels, une entrée par polygone
+function realLandNear(box) {
+  if (!realLandPieces) {
+    realLandPieces = [];
+    if (landTopo) {
+      for (const f of topoFeature(landTopo, landTopo.objects.land).features) {
+        const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+        for (const rings of polys) {
+          const mp = projectToPixelMultiPoly({ type: 'Polygon', coordinates: fixPieceWinding(rings) });
+          if (mp.length) realLandPieces.push({ mp, bbox: bboxOfPixelMultiPoly(mp) });
+        }
+      }
+    }
+  }
+  return realLandPieces.filter((l) => bboxesOverlap(box, l.bbox)).map((l) => l.mp);
+}
+function railPath(a, b) {
+  const p1 = pointInfrastructure(a);
+  const p2 = pointInfrastructure(b);
+  if (!p1 || !p2) return null;
+  const cle = `${a}|${b}|${Math.round(p1.x)},${Math.round(p1.y)}|${Math.round(p2.x)},${Math.round(p2.y)}`;
+  if (!railPathCache.has(cle)) railPathCache.set(cle, computeLandPath([displayGeometryById.get(a), displayGeometryById.get(b)].filter(Boolean), p1, p2));
+  return railPathCache.get(cle);
+}
+
+// shapes : formes affichées des deux territoires. La "vraie terre" est le trait de côte mondial
+// (realLandNear) : les formes des territoires, simplifiées ou issues de sources d'États aux côtes
+// approximatives, referment de petits golfes et estuaires (golfe de Khambhat, estuaire du
+// Yangtsé) ou débordent sur la mer. On cherche d'abord un chemin qui reste dans les deux cases ET
+// sur la vraie terre ; s'il n'y en a pas (leur contact passe par une côte…), un chemin sur
+// n'importe quelle terre — il peut alors mordre un peu sur un territoire voisin, mais ne passe
+// jamais par la mer.
+function computeLandPath(shapes, p1, p2) {
+  const straight = [p1, p2];
+  if (!shapes.length) return straight;
+  // Grille autour des deux points, avec une large marge pour les détours (contourner une mer
+  // intérieure) — mais pas sur tout le territoire : l'Europe germanique, par exemple, inclut le
+  // Groenland, et une grille aussi vaste serait trop grossière pour voir les détroits (une case
+  // de 40 km enjambe le Kattegat). Pas fin : 1 px de texture (≈ 10 km) pour les rails courts.
+  const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  const marge = Math.max(60, d * 0.6);
+  const x0 = Math.min(p1.x, p2.x) - marge, y0 = Math.min(p1.y, p2.y) - marge;
+  const x1 = Math.max(p1.x, p2.x) + marge, y1 = Math.max(p1.y, p2.y) + marge;
+  const step = Math.max(1, Math.ceil(Math.max(x1 - x0, y1 - y0) / 700));
+  const W = Math.ceil((x1 - x0) / step) + 1;
+  const H = Math.ceil((y1 - y0) / step) + 1;
+  const boite = [x0, y0, x1, y1];
+
+  // Masque (1 = terre praticable) : zone des formes `limites` (si données) ∩ terre `reelle`.
+  const masque = (limites, reelle) => {
+    const peindre = (formes, epaisseur) => {
+      const c = document.createElement('canvas');
+      c.width = W;
+      c.height = H;
+      const cx = c.getContext('2d', { willReadFrequently: true });
+      cx.scale(1 / step, 1 / step);
+      cx.translate(-x0, -y0);
+      cx.fillStyle = '#fff';
+      cx.strokeStyle = '#fff';
+      cx.lineWidth = epaisseur; // referme les fines coutures entre formes voisines
+      cx.beginPath();
+      for (const mp of formes) drawPixelPath(cx, mp);
+      cx.fill('evenodd');
+      if (epaisseur) cx.stroke();
+      return c;
+    };
+    // Terre réelle sans trait : c'est un seul bloc continu par continent (pas de couture à
+    // refermer), et un trait refermerait le fond des golfes étroits.
+    const c = peindre(reelle, 0);
+    if (limites) {
+      const cx = c.getContext('2d', { willReadFrequently: true });
+      cx.setTransform(1, 0, 0, 1, 0, 0);
+      cx.globalCompositeOperation = 'destination-in';
+      cx.drawImage(peindre(limites, 1.5), 0, 0);
+    }
+    const alpha = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+    const land = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) land[i] = alpha[i * 4 + 3] > 127 ? 1 : 0;
+    return land;
+  };
+  const tentative = (land) => landPathOnGrid(land, W, H, x0, y0, step, p1, p2);
+
+  const terre = realLandNear(boite);
+  if (!terre.length) return straight;
+  const chemin = tentative(masque(shapes, terre)) || tentative(masque(null, terre));
+  return chemin || straight; // aucune terre ne relie les deux points : on garde la droite
+}
+
+// Plus court chemin par la terre sur une grille (Dijkstra, 8 directions), plus cher au ras des
+// côtes pour passer par l'intérieur ; puis tendu en segments droits là où la ligne reste sur
+// terre, et arrondi légèrement (Chaikin) sans jamais repasser en mer. null s'il n'y a pas de
+// passage.
+function landPathOnGrid(land, W, H, x0, y0, step, p1, p2) {
+  const toCell = (p) => [Math.round((p.x - x0) / step), Math.round((p.y - y0) / step)];
+  const onLand = (cx, cy) => cx >= 0 && cy >= 0 && cx < W && cy < H && land[cy * W + cx] === 1;
+  // Ligne entre deux points entièrement sur terre ? (échantillonnage à la demi-case)
+  const lineOnLand = (pa, pb) => {
+    const n = Math.ceil(Math.hypot(pb.x - pa.x, pb.y - pa.y) / (step * 0.5));
+    for (let k = 0; k <= n; k++) {
+      const t = n ? k / n : 0;
+      const [cx, cy] = toCell({ x: pa.x + (pb.x - pa.x) * t, y: pa.y + (pb.y - pa.y) * t });
+      if (!onLand(cx, cy)) return false;
+    }
+    return true;
+  };
+  // Case de terre la plus proche d'un point (au cas où il tomberait juste hors de la terre,
+  // ex. une ville portuaire posée sur la côte).
+  const snap = (p) => {
+    const [cx, cy] = toCell(p);
+    if (onLand(cx, cy)) return [cx, cy];
+    for (let r = 1; r < 40; r++) {
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) === r && onLand(cx + dx, cy + dy)) return [cx + dx, cy + dy];
+      }
+    }
+    return null;
+  };
+  const start = snap(p1);
+  const goal = snap(p2);
+  if (!start || !goal) return null;
+  const cellPoint = ([cx, cy]) => ({ x: x0 + cx * step, y: y0 + cy * step });
+  // Extrémités ramenées sur la terre si besoin (ville posée sur la côte).
+  const q1 = onLand(...toCell(p1)) ? p1 : cellPoint(start);
+  const q2 = onLand(...toCell(p2)) ? p2 : cellPoint(goal);
+  if (lineOnLand(q1, q2)) return [q1, q2];
+
+  const nearCoast = (cx, cy) => {
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (!onLand(cx + dx, cy + dy)) return true;
+    return false;
+  };
+  const dist = new Float64Array(W * H).fill(Infinity);
+  const prev = new Int32Array(W * H).fill(-1);
+  const heap = [];
+  const push = (d, i) => {
+    heap.push([d, i]);
+    let k = heap.length - 1;
+    while (k > 0) {
+      const parent = (k - 1) >> 1;
+      if (heap[parent][0] <= heap[k][0]) break;
+      [heap[parent], heap[k]] = [heap[k], heap[parent]];
+      k = parent;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      let k = 0;
+      for (;;) {
+        const l = 2 * k + 1, r = l + 1;
+        let m = k;
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+        if (m === k) break;
+        [heap[m], heap[k]] = [heap[k], heap[m]];
+        k = m;
+      }
+    }
+    return top;
+  };
+  const si = start[1] * W + start[0];
+  const gi = goal[1] * W + goal[0];
+  dist[si] = 0;
+  push(0, si);
+  const dirs = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
+  while (heap.length) {
+    const [d, i] = pop();
+    if (i === gi) break;
+    if (d > dist[i]) continue;
+    const cx = i % W, cy = (i - cx) / W;
+    for (const [dx, dy, c] of dirs) {
+      const nx = cx + dx, ny = cy + dy;
+      if (!onLand(nx, ny)) continue;
+      const ni = ny * W + nx;
+      const nd = d + c * (nearCoast(nx, ny) ? 4 : 1);
+      if (nd < dist[ni]) { dist[ni] = nd; prev[ni] = i; push(nd, ni); }
+    }
+  }
+  if (!Number.isFinite(dist[gi])) return null;
+  const cells = [];
+  for (let i = gi; i !== -1; i = prev[i]) cells.push(i);
+  cells.reverse();
+  const raw = cells.map((i) => cellPoint([i % W, Math.floor(i / W)]));
+  raw[0] = q1;
+  raw[raw.length - 1] = q2;
+
+  // Tendre le chemin : depuis chaque point, sauter au point le plus lointain encore visible par la terre.
+  const taut = [raw[0]];
+  let k = 0;
+  while (k < raw.length - 1) {
+    let far = k + 1;
+    for (let m = raw.length - 1; m > k + 1; m--) {
+      if (lineOnLand(raw[k], raw[m])) { far = m; break; }
+    }
+    taut.push(raw[far]);
+    k = far;
+  }
+  // Arrondir légèrement les angles (Chaikin), tant que la courbe reste sur terre.
+  let smooth = taut;
+  for (let iter = 0; iter < 3; iter++) {
+    const next = [smooth[0]];
+    for (let i = 0; i < smooth.length - 1; i++) {
+      const pa = smooth[i], pb = smooth[i + 1];
+      next.push({ x: 0.75 * pa.x + 0.25 * pb.x, y: 0.75 * pa.y + 0.25 * pb.y });
+      next.push({ x: 0.25 * pa.x + 0.75 * pb.x, y: 0.25 * pa.y + 0.75 * pb.y });
+    }
+    next.push(smooth[smooth.length - 1]);
+    if (!next.every((pt, i) => i === 0 || lineOnLand(next[i - 1], pt))) break;
+    smooth = next;
+  }
+  return smooth;
+}
+
+// Voie ferrée dessinée dans la texture le long d'un tracé (liste de points) : un ballast à la
+// couleur du joueur, des traverses sombres, deux rails clairs, et un petit quai rond à chaque bout.
 const RAIL_WIDTH = TEX_W * 0.0022;
-function drawRail(ctx, p1, p2, color, alpha) {
-  if (!p1 || !p2) return;
-  const dx = p2.x - p1.x;
-  const dy = p2.y - p1.y;
-  const len = Math.hypot(dx, dy);
-  if (len < 1) return;
-  const ux = dx / len, uy = dy / len;
-  const nx = -uy, ny = ux;
+function drawRail(ctx, pts, color, alpha) {
+  if (!pts || pts.length < 2) return;
   const w = RAIL_WIDTH;
-  const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  const tracer = (offset) => {
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      // Normale locale : moyenne des segments autour du point.
+      const pa = pts[Math.max(0, i - 1)], pb = pts[Math.min(pts.length - 1, i + 1)];
+      const len = Math.hypot(pb.x - pa.x, pb.y - pa.y) || 1;
+      const nx = -(pb.y - pa.y) / len, ny = (pb.x - pa.x) / len;
+      const x = p.x + nx * offset, y = p.y + ny * offset;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.strokeStyle = 'rgba(0,0,0,0.6)';
   ctx.lineWidth = w * 2.3;
-  line(p1.x, p1.y, p2.x, p2.y);
+  tracer(0);
   ctx.strokeStyle = color;
   ctx.lineWidth = w * 1.9;
-  line(p1.x, p1.y, p2.x, p2.y);
+  tracer(0);
+  // Traverses, régulièrement espacées le long du tracé.
   ctx.lineCap = 'butt';
   ctx.strokeStyle = '#3a2a1f';
   ctx.lineWidth = w * 0.32;
-  for (let t = w; t < len - w * 0.5; t += w * 0.85) {
-    const cx = p1.x + ux * t, cy = p1.y + uy * t;
-    line(cx - nx * w * 0.8, cy - ny * w * 0.8, cx + nx * w * 0.8, cy + ny * w * 0.8);
+  const espacement = w * 0.85;
+  let reste = w;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const pa = pts[i], pb = pts[i + 1];
+    const len = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+    if (len < 1e-6) continue;
+    const ux = (pb.x - pa.x) / len, uy = (pb.y - pa.y) / len;
+    let t = reste;
+    for (; t < len; t += espacement) {
+      const cx = pa.x + ux * t, cy = pa.y + uy * t;
+      ctx.beginPath();
+      ctx.moveTo(cx + uy * w * 0.8, cy - ux * w * 0.8);
+      ctx.lineTo(cx - uy * w * 0.8, cy + ux * w * 0.8);
+      ctx.stroke();
+    }
+    reste = t - len;
   }
+  ctx.lineCap = 'round';
   ctx.strokeStyle = '#eef0f3';
   ctx.lineWidth = w * 0.18;
-  for (const side of [-0.45, 0.45]) {
-    line(p1.x + nx * w * side, p1.y + ny * w * side, p2.x + nx * w * side, p2.y + ny * w * side);
-  }
-  for (const p of [p1, p2]) {
+  tracer(-w * 0.45);
+  tracer(w * 0.45);
+  for (const p of [pts[0], pts[pts.length - 1]]) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, w * 1.25, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -1574,7 +1817,9 @@ function handleTerritoryClick(id) {
     renderAll();
     return;
   }
-  if (partie.phase === 'rail' && partie.proprietaire[id] === joueurCourant(partie)) {
+  // Rail : tout territoire en surbrillance (à soi ou neutre voisin), ou l'un des siens (pour
+  // recommencer depuis un autre point de départ).
+  if (partie.phase === 'rail' && (territoiresEnSurbrillance().includes(id) || partie.proprietaire[id] === joueurCourant(partie))) {
     toucherPourRail(id);
     selectedId = null;
     renderAll();
@@ -1696,6 +1941,7 @@ window.__debug = {
   ancre: (id) => { const a = labelAnchorById.get(id); return a ? projection.invert([a.x, a.y]) : null; },
   surbrillance: () => territoiresEnSurbrillance(),
   choix: () => ({ atelierChoix, villeChoix, railChoix, dernierToucher, lastClickInfo }),
+  railPath: (a, b) => (railPath(a, b) || []).map((pt) => projection.invert([pt.x, pt.y])),
 };
 updatePoiScale(world.pointOfView());
 
@@ -1771,8 +2017,10 @@ function buildMarkerElement(d) {
     const marker = document.createElement('div');
     // Ville possédée : sa maquette 3D (voir objects3d) prend le relais de l'icône en zoomant.
     const proprioVille = partie.villes[d.territoireId];
-    marker.className = `poi-marker${proprioVille !== undefined ? ' has-3d' : ''}`;
+    // Ville possédée : carré plein à la couleur du joueur, étoile en blanc (comme une usine posée).
+    marker.className = `poi-marker${proprioVille !== undefined ? ' occupied has-3d' : ''}`;
     marker.style.borderColor = proprioVille !== undefined ? PLAYERS[proprioVille].color : MARKER_NEUTRAL;
+    if (proprioVille !== undefined) marker.style.background = PLAYERS[proprioVille].color;
     marker.innerHTML = CITY_ICON_SVG;
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; handleTerritoryClick(d.territoireId); };
@@ -1899,6 +2147,9 @@ function loadGameData(attempt = 1) {
   Promise.all([
     fetchJson('geo/territoires.geo.json' + cacheBust),
     earthImg || loadImage('textures/earth-day.jpg' + cacheBust).then((img) => { earthImg = img; }),
+    // Trait de côte mondial (Natural Earth 50m), chargé en parallèle : sert à faire passer les
+    // rails par la vraie terre (voir railPath).
+    landTopo || import('world-atlas/land-50m.json').then((m) => { landTopo = m.default; }),
   ]).then(([geo]) => {
     const totalPoints = geo.features.reduce((a, f) => a + countPoints(f.geometry), 0);
     statusEl.textContent = `Prêt (${geo.features.length} terr., ${totalPoints} pts géo)`;

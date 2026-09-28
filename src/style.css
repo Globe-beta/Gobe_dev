@@ -461,8 +461,8 @@ html, body {
   font-size: 13px;
 }
 
-/* Slot Industrie occupé : carré plein à la couleur du joueur, icône en blanc. */
-.poi-marker--factory.occupied > svg { fill: #fff; }
+/* Slot Industrie occupé / ville possédée : carré plein à la couleur du joueur, icône en blanc. */
+.poi-marker.occupied > svg { fill: #fff; }
 .poi-resource-icon { position: relative; }
 /* Zoomé (voir setModels3dVisible) : la maquette 3D remplace l'icône au même endroit ; seule
    l'icône disparaît, les ressources (dont celle produite, en couleur) restent affichées dessous. */
