@@ -11,6 +11,7 @@ import { CONFIG, COULEURS_JOUEURS, PUISSANCES, ageEnChiffresRomains } from './co
 import {
   nouvellePartie, joueurCourant, tirerOrdre, choisirPuissance, puissancePrisePar,
   territoiresPourAtelier, ressourcesPourAtelier, peutConfirmerAtelier, placerAtelier,
+  villesPossibles, choisirVille, definirVoisinage, territoiresPourRail, peutPoserRail, placerRail,
 } from './partie.js';
 import { construireVille, construireUsine } from './models3d.js';
 
@@ -899,7 +900,8 @@ function redrawLive() {
   // Étape "atelier de départ" : seuls les territoires du joueur courant qui ont un slot
   // Industrie libre sont mis en surbrillance ; celui qu'il a choisi, plus fort.
   const surbrillance = territoiresEnSurbrillance();
-  for (const id of surbrillance) paint(id, id === atelierChoix.territoireId ? 'rgba(255,224,102,0.8)' : 'rgba(255,224,102,0.45)');
+  const choisis = territoiresChoisis();
+  for (const id of surbrillance) paint(id, choisis.includes(id) ? 'rgba(255,224,102,0.8)' : 'rgba(255,224,102,0.45)');
   if (selectedId && !surbrillance.includes(selectedId)) paint(selectedId, 'rgba(255,224,102,0.55)');
 
   if (bordersCanvas) liveCtx.drawImage(bordersCanvas, 0, 0);
@@ -914,10 +916,117 @@ function redrawLive() {
     liveCtx.stroke();
   }
 
+  // Rails posés, puis le rail en cours de pose (pas encore confirmé), en transparence.
+  for (const r of partie.rails) drawRail(liveCtx, pointInfrastructure(r.a), pointInfrastructure(r.b), PLAYERS[r.joueur].color, 1);
+  if (partie.phase === 'rail' && railChoix.a && railChoix.b) {
+    drawRail(liveCtx, pointInfrastructure(railChoix.a), pointInfrastructure(railChoix.b), PLAYERS[joueurCourant(partie)].color, 0.6);
+  }
+
   drawLabels(liveCtx);
 
   globeTexture.needsUpdate = true;
 }
+
+// Point d'un territoire où arrive un rail : son infrastructure — sa ville si elle est
+// possédée, sinon son usine, sinon le cœur du territoire (même point que son nom).
+function pointInfrastructure(territoireId) {
+  const t = TERRITOIRE_PAR_ID[territoireId];
+  if (t?.ville && partie.villes[territoireId] !== undefined) {
+    const [x, y] = projection([t.ville.lon, t.ville.lat]);
+    return { x, y };
+  }
+  const usine = partie.usines[territoireId] && markersData.find((d) => d.type === 'factory' && d.territoireId === territoireId);
+  if (usine) {
+    const [x, y] = projection([usine.lon, usine.lat]);
+    return { x, y };
+  }
+  return labelAnchorById.get(territoireId);
+}
+
+// Voie ferrée dessinée dans la texture entre deux points : un ballast à la couleur du joueur,
+// des traverses sombres, deux rails clairs, et un petit quai rond à chaque bout.
+const RAIL_WIDTH = TEX_W * 0.0022;
+function drawRail(ctx, p1, p2, color, alpha) {
+  if (!p1 || !p2) return;
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return;
+  const ux = dx / len, uy = dy / len;
+  const nx = -uy, ny = ux;
+  const w = RAIL_WIDTH;
+  const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.lineWidth = w * 2.3;
+  line(p1.x, p1.y, p2.x, p2.y);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = w * 1.9;
+  line(p1.x, p1.y, p2.x, p2.y);
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = '#3a2a1f';
+  ctx.lineWidth = w * 0.32;
+  for (let t = w; t < len - w * 0.5; t += w * 0.85) {
+    const cx = p1.x + ux * t, cy = p1.y + uy * t;
+    line(cx - nx * w * 0.8, cy - ny * w * 0.8, cx + nx * w * 0.8, cy + ny * w * 0.8);
+  }
+  ctx.strokeStyle = '#eef0f3';
+  ctx.lineWidth = w * 0.18;
+  for (const side of [-0.45, 0.45]) {
+    line(p1.x + nx * w * side, p1.y + ny * w * side, p2.x + nx * w * side, p2.y + ny * w * side);
+  }
+  for (const p of [p1, p2]) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, w * 1.25, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = w * 0.3;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Deux territoires sont voisins si leurs formes affichées se touchent (à 2.5 px de texture
+// près, soit ~25 km) : un sommet de l'un posé sur un côté de l'autre. Calcul fait à la demande
+// et mémorisé, limité aux sommets et côtés situés dans la zone commune des deux formes.
+const VOISIN_TOLERANCE_PX = 2.5;
+const voisinageCache = new Map();
+function territoiresVoisins(a, b) {
+  const cle = a < b ? `${a}|${b}` : `${b}|${a}`;
+  if (voisinageCache.has(cle)) return voisinageCache.get(cle);
+  const ma = displayGeometryById.get(a);
+  const mb = displayGeometryById.get(b);
+  let voisins = false;
+  if (ma && mb) {
+    const t = VOISIN_TOLERANCE_PX;
+    const [ax0, ay0, ax1, ay1] = bboxOfPixelMultiPoly(ma);
+    const [bx0, by0, bx1, by1] = bboxOfPixelMultiPoly(mb);
+    const zone = [Math.max(ax0, bx0) - t, Math.max(ay0, by0) - t, Math.min(ax1, bx1) + t, Math.min(ay1, by1) + t];
+    const dans = ([x, y]) => x >= zone[0] && x <= zone[2] && y >= zone[1] && y <= zone[3];
+    if (zone[0] <= zone[2] && zone[1] <= zone[3]) {
+      const segmentsB = [];
+      for (const poly of mb) for (const ring of poly) {
+        for (let i = 0; i < ring.length - 1; i++) if (dans(ring[i]) || dans(ring[i + 1])) segmentsB.push([ring[i], ring[i + 1]]);
+      }
+      const distSeg = ([px, py], [[x1, y1], [x2, y2]]) => {
+        const vx = x2 - x1, vy = y2 - y1;
+        const l2 = vx * vx + vy * vy;
+        const k = l2 ? Math.max(0, Math.min(1, ((px - x1) * vx + (py - y1) * vy) / l2)) : 0;
+        return Math.hypot(px - (x1 + k * vx), py - (y1 + k * vy));
+      };
+      outer: for (const poly of ma) for (const ring of poly) for (const pt of ring) {
+        if (!dans(pt)) continue;
+        for (const seg of segmentsB) if (distSeg(pt, seg) <= t) { voisins = true; break outer; }
+      }
+    }
+  }
+  voisinageCache.set(cle, voisins);
+  return voisins;
+}
+definirVoisinage(territoiresVoisins);
 
 function colorWithAlpha(hex, alpha) {
   const n = parseInt(hex.slice(1), 16);
@@ -946,14 +1055,32 @@ let partie = nouvellePartie(initialReserve());
 // c'est l'ordre de jeu tiré qui décide (joueurCourant).
 let activePlayer = 0;
 function joueurActif() {
-  return partie.phase === 'puissances' || partie.phase === 'atelier' ? joueurCourant(partie) : activePlayer;
+  return partie.phase !== 'ordre' && partie.phase !== 'jeu' ? joueurCourant(partie) : activePlayer;
 }
-// Choix en cours à l'étape "atelier de départ", tant qu'il n'est pas confirmé.
+// Choix en cours aux étapes de mise en place, tant qu'ils ne sont pas confirmés.
 let atelierChoix = { territoireId: null, ressource: null };
+let villeChoix = null; // territoireId de la ville choisie
+let railChoix = { a: null, b: null }; // les deux territoires touchés, dans l'ordre
+function reinitialiserChoix() {
+  atelierChoix = { territoireId: null, ressource: null };
+  villeChoix = null;
+  railChoix = { a: null, b: null };
+}
+// Territoire(s) déjà choisi(s) à l'étape en cours (surbrillance plus forte).
+function territoiresChoisis() {
+  return [atelierChoix.territoireId, villeChoix, railChoix.a, railChoix.b].filter(Boolean);
+}
 // Territoire touché dont la fiche est affichée | null.
 let selectedId = null;
 function territoiresEnSurbrillance() {
-  return partie.phase === 'atelier' ? territoiresPourAtelier(partie, joueurCourant(partie)) : [];
+  const j = joueurCourant(partie);
+  if (partie.phase === 'atelier') return territoiresPourAtelier(partie, j);
+  if (partie.phase === 'ville') return villesPossibles(partie, j);
+  if (partie.phase === 'rail') {
+    if (!railChoix.a) return territoiresPourRail(partie, j);
+    return [railChoix.a, ...territoiresPourRail(partie, j, railChoix.a)];
+  }
+  return [];
 }
 
 // Régions -> liste de territoireId (pour la détection "région intégrée")
@@ -974,7 +1101,7 @@ function computeScores() {
     const owner = partie.proprietaire[t.id];
     if (owner === undefined) continue;
     scores[owner].territoires += 1;
-    if (t.ville) scores[owner].villes += 1;
+    if (t.ville && partie.villes[t.id] === owner) scores[owner].villes += 1;
   }
 
   for (const [, ids] of Object.entries(territoiresParRegion)) {
@@ -1083,7 +1210,7 @@ resetBtn.onclick = () => {
   if (!confirm('Recommencer une nouvelle partie depuis le début (ordre de jeu, puissances, ateliers) ?')) return;
   partie = nouvellePartie(initialReserve());
   activePlayer = 0;
-  atelierChoix = { territoireId: null, ressource: null };
+  reinitialiserChoix();
   selectedId = null;
   renderAll();
 };
@@ -1228,7 +1355,7 @@ function renderSetupCard() {
     html += `<div class="setup-title">Étape 2 — Choix des puissances</div><div class="setup-text">${tourDe(joueurCourant(partie))} : choisissez votre puissance.</div>`;
     html += `<div class="puissances">${PUISSANCES.map((pu) => {
       const pris = puissancePrisePar(partie, pu.id);
-      const villes = pu.villesDepart.map((id) => TERRITOIRE_PAR_ID[id]?.ville?.nom).filter(Boolean).join(' · ');
+      const villes = pu.villesDepart.map((id) => TERRITOIRE_PAR_ID[id]?.ville?.nom).filter(Boolean).join(' ou ');
       return `<button class="puissance-card${pris !== null ? ' prise' : ''}" data-puissance="${pu.id}" ${pris !== null ? 'disabled' : ''} style="${pris !== null ? `--c:${PLAYERS[pris].color}` : ''}">
         <span class="puissance-nom">${pu.nom}</span>
         <span class="puissance-villes">★ ${villes}</span>
@@ -1258,6 +1385,33 @@ function renderSetupCard() {
           <button class="btn" data-action="annuler-atelier">Annuler</button>
         </div>`;
     }
+  } else if (partie.phase === 'ville') {
+    const j = joueurCourant(partie);
+    html += ligneOrdre();
+    html += `<div class="setup-title">Étape 4 — Ville de départ</div>
+      <div class="setup-text">${tourDe(j)} : choisissez votre ville de départ parmi celles de votre région (touchez-la sur le globe ou ci-dessous).</div>
+      <div class="setup-actions">${villesPossibles(partie, j).map((id) => {
+        const t = TERRITOIRE_PAR_ID[id];
+        return `<button class="btn${villeChoix === id ? ' btn-chosen' : ''}" data-ville="${id}" style="--c:${PLAYERS[j].color}">★ ${escapeHtml(t.ville.nom)} <span class="dim">(${escapeHtml(t.nom)})</span></button>`;
+      }).join('')}</div>
+      <div class="setup-actions" style="margin-top:8px">
+        <button class="btn btn-primary" data-action="confirmer-ville" ${villeChoix ? '' : 'disabled'}>Confirmer</button>
+        <button class="btn" data-action="annuler-choix" ${villeChoix ? '' : 'disabled'}>Annuler</button>
+      </div>`;
+  } else if (partie.phase === 'rail') {
+    const j = joueurCourant(partie);
+    const nom = (id) => `<b>${escapeHtml(TERRITOIRE_PAR_ID[id].nom)}</b>`;
+    let consigne;
+    if (!railChoix.a) consigne = 'touchez un premier territoire (en surbrillance) : le rail en partira.';
+    else if (!railChoix.b) consigne = `rail depuis ${nom(railChoix.a)} : touchez maintenant un territoire voisin en surbrillance.`;
+    else consigne = `rail ${nom(railChoix.a)} ⟷ ${nom(railChoix.b)} : confirmez pour le poser.`;
+    html += ligneOrdre();
+    html += `<div class="setup-title">Étape 5 — Rail de départ</div>
+      <div class="setup-text">${tourDe(j)} : ${consigne}</div>
+      <div class="setup-actions">
+        <button class="btn btn-primary" data-action="confirmer-rail" ${peutPoserRail(partie, railChoix.a, railChoix.b) ? '' : 'disabled'}>Confirmer</button>
+        <button class="btn" data-action="annuler-choix" ${railChoix.a ? '' : 'disabled'}>Annuler</button>
+      </div>`;
   } else {
     html += ligneOrdre();
     html += `<div class="setup-title">Mise en place terminée</div><div class="setup-text">${tourDe(activePlayer)}.</div>`;
@@ -1284,21 +1438,57 @@ setupCard.addEventListener('click', (ev) => {
     atelierChoix.ressource = btn.dataset.ressource;
   } else if (btn.dataset.action === 'annuler-atelier') {
     atelierChoix = { territoireId: null, ressource: null };
+  } else if (btn.dataset.ville) {
+    villeChoix = btn.dataset.ville;
+  } else if (btn.dataset.action === 'annuler-choix') {
+    reinitialiserChoix();
+  } else if (btn.dataset.action === 'confirmer-ville') {
+    const joueur = joueurCourant(partie);
+    const t = TERRITOIRE_PAR_ID[villeChoix];
+    choisirVille(partie, villeChoix);
+    showToast(`${PLAYERS[joueur].name} : ville de départ ${t.ville.nom}`);
+    reinitialiserChoix();
+    apresEtape();
+  } else if (btn.dataset.action === 'confirmer-rail') {
+    const joueur = joueurCourant(partie);
+    placerRail(partie, railChoix.a, railChoix.b);
+    showToast(`${PLAYERS[joueur].name} : rail ${TERRITOIRE_PAR_ID[railChoix.a].nom} ⟷ ${TERRITOIRE_PAR_ID[railChoix.b].nom}`);
+    reinitialiserChoix();
+    apresEtape();
   } else if (btn.dataset.action === 'confirmer-atelier') {
     const joueur = joueurCourant(partie);
     const t = TERRITOIRE_PAR_ID[atelierChoix.territoireId];
     placerAtelier(partie, atelierChoix.territoireId, atelierChoix.ressource);
     showToast(`${PLAYERS[joueur].name} : Atelier posé en ${t.nom} (${atelierChoix.ressource})`);
-    atelierChoix = { territoireId: null, ressource: null };
-    if (partie.phase === 'atelier') flyToPlayer(joueurCourant(partie));
-    else activePlayer = partie.ordre[0];
+    reinitialiserChoix();
+    apresEtape();
   }
   renderAll();
 });
 
+// Après chaque choix confirmé : caméra sur la puissance du joueur suivant, ou, une fois la mise
+// en place terminée, premier joueur de l'ordre tiré actif.
+function apresEtape() {
+  if (partie.phase === 'jeu') activePlayer = partie.ordre[0];
+  else flyToPlayer(joueurCourant(partie));
+}
+
 function choisirTerritoireAtelier(id) {
   atelierChoix = { territoireId: id, ressource: null };
   selectedId = null;
+}
+
+// Étape du rail : premier territoire touché, puis un voisin ; retoucher le premier l'annule,
+// toucher un autre territoire de départ possible recommence depuis celui-ci.
+function toucherPourRail(id) {
+  const j = joueurCourant(partie);
+  if (railChoix.a === id) {
+    railChoix = { a: null, b: null };
+  } else if (railChoix.a && territoiresPourRail(partie, j, railChoix.a).includes(id)) {
+    railChoix.b = id;
+  } else if (territoiresPourRail(partie, j).includes(id)) {
+    railChoix = { a: id, b: null };
+  }
 }
 
 // Centre la caméra sur une région (moyenne des positions de ses territoires).
@@ -1308,7 +1498,10 @@ function flyToRegion(region) {
   if (!pts.length) return;
   const lng = pts.reduce((a, p) => a + p[0], 0) / pts.length;
   const lat = pts.reduce((a, p) => a + p[1], 0) / pts.length;
-  world.pointOfView({ lat, lng, altitude: 1.3 }, 1200);
+  // Sur téléphone, le panneau de mise en place couvre le bas de l'écran : on vise un peu plus
+  // au sud pour que la région apparaisse dans la moitié haute, bien visible et touchable.
+  const decalage = window.matchMedia('(max-width: 699px)').matches ? 14 : 0;
+  world.pointOfView({ lat: lat - decalage, lng, altitude: 1.3 }, 1200);
 }
 function flyToPlayer(joueur) {
   const puissance = PUISSANCES.find((pu) => pu.id === partie.joueurs[joueur]?.puissance);
@@ -1361,9 +1554,29 @@ infoCard.addEventListener('click', (ev) => {
 
 // Un territoire touché sur le globe (ou sa ville) : à l'étape de l'atelier, un territoire en
 // surbrillance du joueur courant ouvre directement le choix de ressource ; sinon, sa fiche.
+// Un même toucher peut remonter deux fois (clic du globe + événement de pointeur selon
+// l'appareil) : sans garde, l'étape du rail — où retoucher un territoire l'annule — le
+// sélectionnait puis le désélectionnait aussitôt. On ignore donc un second toucher du même
+// territoire arrivé presque en même temps.
+let dernierToucher = { id: null, at: 0 };
 function handleTerritoryClick(id) {
+  const now = Date.now();
+  if (dernierToucher.id === id && now - dernierToucher.at < 350) return;
+  dernierToucher = { id, at: now };
   if (partie.phase === 'atelier' && territoiresEnSurbrillance().includes(id)) {
     choisirTerritoireAtelier(id);
+    renderAll();
+    return;
+  }
+  if (partie.phase === 'ville' && territoiresEnSurbrillance().includes(id)) {
+    villeChoix = id;
+    selectedId = null;
+    renderAll();
+    return;
+  }
+  if (partie.phase === 'rail' && partie.proprietaire[id] === joueurCourant(partie)) {
+    toucherPourRail(id);
+    selectedId = null;
     renderAll();
     return;
   }
@@ -1416,11 +1629,11 @@ function refreshObjects3d() {
   const wanted = [];
   for (const [territoireId, joueur] of Object.entries(partie.villes)) {
     const t = TERRITOIRE_PAR_ID[territoireId];
-    if (t?.ville) wanted.push({ key: `ville:${territoireId}:${joueur}`, lat: t.ville.lat, lon: t.ville.lon, build: () => construireVille(t.ville.nom, PLAYERS[joueur].color) });
+    if (t?.ville) wanted.push({ key: `ville:${territoireId}:${joueur}`, territoireId, lat: t.ville.lat, lon: t.ville.lon, build: () => construireVille(t.ville.nom, PLAYERS[joueur].color) });
   }
   for (const [territoireId, usine] of Object.entries(partie.usines)) {
     const m = markersData.find((d) => d.type === 'factory' && d.territoireId === territoireId);
-    if (m) wanted.push({ key: `usine:${territoireId}:${usine.joueur}`, lat: m.lat, lon: m.lon, build: () => construireUsine(PLAYERS[usine.joueur].color) });
+    if (m) wanted.push({ key: `usine:${territoireId}:${usine.joueur}`, territoireId, lat: m.lat, lon: m.lon, build: () => construireUsine(PLAYERS[usine.joueur].color) });
   }
   const signature = wanted.map((w) => w.key).join('|');
   if (signature === objects3dSignature) return;
@@ -1429,7 +1642,7 @@ function refreshObjects3d() {
     if (!modelCache.has(w.key)) modelCache.set(w.key, w.build());
     const obj = modelCache.get(w.key);
     obj.visible = models3dVisible;
-    return { lat: w.lat, lon: w.lon, obj };
+    return { territoireId: w.territoireId, lat: w.lat, lon: w.lon, obj };
   });
   world.objectsData(objects3d);
 }
@@ -1465,11 +1678,25 @@ world
   .objectLng((d) => d.lon)
   .objectAltitude(0.002)
   .objectFacesSurface(true)
-  .objectThreeObject((d) => d.obj);
+  .objectThreeObject((d) => d.obj)
+  // Un toucher sur une maquette 3D (même invisible de loin : elle reste sur le trajet du
+  // clic) n'arrive pas au globe (onGlobeClick) : on le traite comme un toucher de son territoire.
+  .onObjectClick((d) => {
+    if (!wasCleanTap()) return;
+    lastClickInfo = `objet→${d.territoireId}`;
+    handleTerritoryClick(d.territoireId);
+  });
 
 world.pointOfView({ lat: 20, lng: 10, altitude: 2.6 }, 0);
 window.__world = world; // debug uniquement
-window.__debug = { partie: () => partie, markers: () => markersData }; // debug uniquement
+// debug uniquement (tests automatisés)
+window.__debug = {
+  partie: () => partie,
+  markers: () => markersData,
+  ancre: (id) => { const a = labelAnchorById.get(id); return a ? projection.invert([a.x, a.y]) : null; },
+  surbrillance: () => territoiresEnSurbrillance(),
+  choix: () => ({ atelierChoix, villeChoix, railChoix, dernierToucher, lastClickInfo }),
+};
 updatePoiScale(world.pointOfView());
 
 // Diagnostic : sur un appareil sous pression mémoire (tablette, beaucoup de géométrie),
@@ -1543,8 +1770,9 @@ function buildMarkerElement(d) {
   if (d.type === 'city') {
     const marker = document.createElement('div');
     // Ville possédée : sa maquette 3D (voir objects3d) prend le relais de l'icône en zoomant.
-    marker.className = `poi-marker${partie.villes[d.territoireId] !== undefined ? ' has-3d' : ''}`;
-    marker.style.borderColor = markerColorForTerritoire(d.territoireId);
+    const proprioVille = partie.villes[d.territoireId];
+    marker.className = `poi-marker${proprioVille !== undefined ? ' has-3d' : ''}`;
+    marker.style.borderColor = proprioVille !== undefined ? PLAYERS[proprioVille].color : MARKER_NEUTRAL;
     marker.innerHTML = CITY_ICON_SVG;
     marker.title = `${d.nom} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
     marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; handleTerritoryClick(d.territoireId); };

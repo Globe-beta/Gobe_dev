@@ -25,8 +25,9 @@ export const CONFIG = {
 export const COULEURS_JOUEURS = ['#e63946', '#2f6fe0', '#9b4dff', '#f4a261', '#f15bb5', '#00b8d9'];
 
 // Puissances à choisir en début de partie. `region` = nom de région de data/territoires.js
-// (le joueur y reçoit tous les territoires) ; `villesDepart` = territoires dont la ville lui
-// est attribuée d'office.
+// (le joueur y reçoit tous les territoires) ; `villesDepart` = territoires dont la ville est
+// proposée au joueur (affichées sur la carte de la puissance) — il en choisit UNE à l'étape
+// "ville de départ" (voir choisirVille dans src/partie.js).
 export const PUISSANCES = [
   { id: 'usa', nom: 'États-Unis', region: 'États-Unis', villesDepart: ['us-nordest', 'us-ouest'] },
   { id: 'chine', nom: 'Chine', region: 'Chine', villesDepart: ['cn-nord', 'cn-cotiere'] },

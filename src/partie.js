@@ -2,8 +2,10 @@
 // main.js pour l'interface), pour pouvoir les lire, les tester et les faire évoluer à part.
 //
 // Déroulé : 'ordre' (tirage de l'ordre de jeu) → 'puissances' (chaque joueur choisit une
-// puissance, dans l'ordre tiré) → 'atelier' (chaque joueur pose son usine de départ, dans le
-// même ordre) → 'jeu'.
+// puissance, dans l'ordre tiré) → 'atelier' (chaque joueur pose son usine de départ) → 'ville'
+// (chaque joueur choisit sa ville de départ parmi celles de sa région) → 'rail' (chaque joueur
+// pose un rail entre deux de ses territoires voisins) → 'jeu'. Chaque étape se joue dans l'ordre
+// tiré ; un joueur qui n'a aucun choix possible à une étape est passé.
 
 import { CONFIG, PUISSANCES } from './config.js';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
@@ -37,6 +39,8 @@ export function nouvellePartie(reserveInitiale = {}) {
     villes: {},
     // territoireId -> { joueur, jetons: [ressource, ...] } pour chaque usine posée.
     usines: {},
+    // Rails posés : { joueur, a, b } relie les territoires a et b.
+    rails: [],
   };
 }
 
@@ -76,10 +80,8 @@ export function choisirPuissance(partie, puissanceId) {
     if (t.region === puissance.region) partie.proprietaire[t.id] = joueur;
   }
   partie.regionsIntegrees[puissance.region] = { joueur, bonus: { ...CONFIG.bonusRegionIntegree } };
-  for (const territoireId of puissance.villesDepart) {
-    partie.villes[territoireId] = joueur;
-    if (partie.joueurs[joueur].reserve.villes > 0) partie.joueurs[joueur].reserve.villes -= 1;
-  }
+  // Les villes de la région ne sont pas attribuées ici : le joueur en choisit une à l'étape
+  // 'ville' (voir choisirVille).
 
   partie.tour += 1;
   // Tous les joueurs ont une puissance (ou il n'y en a plus à prendre) : étape suivante.
@@ -122,9 +124,75 @@ export function placerAtelier(partie, territoireId, ressource) {
   partie.usines[territoireId] = { joueur, jetons: [ressource].slice(0, CONFIG.capaciteAtelier) };
   if (partie.joueurs[joueur].reserve.usines > 0) partie.joueurs[joueur].reserve.usines -= 1;
 
+  passerAuJoueurSuivant(partie);
+}
+
+// Enchaînement des étapes posées une fois par joueur (atelier, ville, rail) : joueur suivant
+// dans l'ordre tiré ; à la fin du tour de table, étape suivante. Un joueur sans aucun choix
+// possible à une étape est passé automatiquement.
+const ETAPES_PAR_JOUEUR = ['atelier', 'ville', 'rail'];
+function aUnChoix(partie, joueur) {
+  if (partie.phase === 'atelier') return territoiresPourAtelier(partie, joueur).length > 0;
+  if (partie.phase === 'ville') return villesPossibles(partie, joueur).length > 0;
+  if (partie.phase === 'rail') return territoiresPourRail(partie, joueur).length > 0;
+  return true;
+}
+function passerAuJoueurSuivant(partie) {
   partie.tour += 1;
-  if (partie.tour >= partie.ordre.length) {
-    partie.phase = 'jeu';
-    partie.tour = 0;
+  for (;;) {
+    if (partie.tour >= partie.ordre.length) {
+      const i = ETAPES_PAR_JOUEUR.indexOf(partie.phase);
+      partie.phase = i >= 0 && i < ETAPES_PAR_JOUEUR.length - 1 ? ETAPES_PAR_JOUEUR[i + 1] : 'jeu';
+      partie.tour = 0;
+      if (partie.phase === 'jeu') return;
+    }
+    if (aUnChoix(partie, joueurCourant(partie))) return;
+    partie.tour += 1;
   }
+}
+
+// Étape 4 : villes que le joueur peut choisir — celles de ses territoires qui n'appartiennent
+// encore à personne.
+export function villesPossibles(partie, joueur) {
+  return TERRITOIRES
+    .filter((t) => t.ville && partie.proprietaire[t.id] === joueur && partie.villes[t.id] === undefined)
+    .map((t) => t.id);
+}
+
+export function choisirVille(partie, territoireId) {
+  if (partie.phase !== 'ville') throw new Error("Ce n'est pas le moment de choisir une ville.");
+  const joueur = joueurCourant(partie);
+  if (!villesPossibles(partie, joueur).includes(territoireId)) throw new Error('Ville non disponible.');
+  partie.villes[territoireId] = joueur;
+  if (partie.joueurs[joueur].reserve.villes > 0) partie.joueurs[joueur].reserve.villes -= 1;
+  passerAuJoueurSuivant(partie);
+}
+
+// Étape 5 : un rail relie deux territoires VOISINS du joueur. La géométrie (qui touche qui)
+// n'est pas connue ici : main.js la fournit une fois pour toutes via definirVoisinage.
+let sontVoisins = () => false;
+export function definirVoisinage(fonction) {
+  sontVoisins = fonction;
+}
+
+const railExiste = (partie, a, b) => partie.rails.some((r) => (r.a === a && r.b === b) || (r.a === b && r.b === a));
+
+// Territoires du joueur qu'un rail peut relier à `depuis` (ou, sans `depuis`, ceux qui ont au
+// moins un tel voisin : premier territoire touché).
+export function territoiresPourRail(partie, joueur, depuis = null) {
+  const siens = TERRITOIRES.filter((t) => t.type !== 'maritime' && partie.proprietaire[t.id] === joueur).map((t) => t.id);
+  const relie = (a, b) => a !== b && sontVoisins(a, b) && !railExiste(partie, a, b);
+  if (depuis) return siens.filter((id) => relie(depuis, id));
+  return siens.filter((a) => siens.some((b) => relie(a, b)));
+}
+
+export function peutPoserRail(partie, a, b) {
+  if (partie.phase !== 'rail' || !a || !b) return false;
+  return territoiresPourRail(partie, joueurCourant(partie), a).includes(b);
+}
+
+export function placerRail(partie, a, b) {
+  if (!peutPoserRail(partie, a, b)) throw new Error('Rail impossible entre ces deux territoires.');
+  partie.rails.push({ joueur: joueurCourant(partie), a, b });
+  passerAuJoueurSuivant(partie);
 }
