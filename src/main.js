@@ -13,6 +13,8 @@ import {
   nouvellePartie, joueurCourant, tirerOrdre, choisirPuissance, puissancePrisePar,
   territoiresPourAtelier, ressourcesPourAtelier, peutConfirmerAtelier, placerAtelier,
   villesPossibles, choisirVille, definirVoisinage, territoiresPourRail, peutPoserRail, placerRail,
+  territoiresDepartPossibles, peutChoisirTerritoiresDepart, choisirTerritoiresDepart,
+  mersVoisines, territoiresPourPort, peutPlacerPort, placerPort,
 } from './partie.js';
 import { construireVille, construireUsine } from './models3d.js';
 
@@ -898,6 +900,10 @@ function redrawLive() {
   for (const [id, p] of Object.entries(partie.proprietaire)) {
     paint(id, colorWithAlpha(PLAYERS[p].color, 0.62));
   }
+  // Cases mer où un joueur a un bateau : à sa couleur (la case choisie pour le premier bateau
+  // aussi, en aperçu, pendant l'étape du port).
+  for (const b of partie.bateaux) paint(b.mer, colorWithAlpha(PLAYERS[b.joueur].color, 0.5));
+  if (partie.phase === 'port' && portChoix.mer) paint(portChoix.mer, colorWithAlpha(PLAYERS[joueurCourant(partie)].color, 0.5));
   // Étape "atelier de départ" : seuls les territoires du joueur courant qui ont un slot
   // Industrie libre sont mis en surbrillance ; celui qu'il a choisi, plus fort.
   const surbrillance = territoiresEnSurbrillance();
@@ -1304,19 +1310,28 @@ function joueurActif() {
 let atelierChoix = { territoireId: null, ressource: null };
 let villeChoix = null; // territoireId de la ville choisie
 let railChoix = { a: null, b: null }; // les deux territoires touchés, dans l'ordre
+let territoiresDepartChoix = []; // territoires de départ sélectionnés
+let portChoix = { territoire: null, mer: null, type: 'navires' };
 function reinitialiserChoix() {
   atelierChoix = { territoireId: null, ressource: null };
   villeChoix = null;
   railChoix = { a: null, b: null };
+  territoiresDepartChoix = [];
+  portChoix = { territoire: null, mer: null, type: 'navires' };
 }
 // Territoire(s) déjà choisi(s) à l'étape en cours (surbrillance plus forte).
 function territoiresChoisis() {
-  return [atelierChoix.territoireId, villeChoix, railChoix.a, railChoix.b].filter(Boolean);
+  return [atelierChoix.territoireId, villeChoix, railChoix.a, railChoix.b, ...territoiresDepartChoix, portChoix.territoire, portChoix.mer].filter(Boolean);
 }
 // Territoire touché dont la fiche est affichée | null.
 let selectedId = null;
 function territoiresEnSurbrillance() {
   const j = joueurCourant(partie);
+  if (partie.phase === 'territoires') return territoiresDepartPossibles(partie, j);
+  if (partie.phase === 'port') {
+    if (!portChoix.territoire) return territoiresPourPort(partie, j);
+    return [portChoix.territoire, ...mersVoisines(portChoix.territoire)];
+  }
   if (partie.phase === 'atelier') return territoiresPourAtelier(partie, j);
   if (partie.phase === 'ville') return villesPossibles(partie, j);
   if (partie.phase === 'rail') {
@@ -1602,13 +1617,48 @@ function renderSetupCard() {
       return `<button class="puissance-card${pris !== null ? ' prise' : ''}" data-puissance="${pu.id}" ${pris !== null ? 'disabled' : ''} style="${pris !== null ? `--c:${PLAYERS[pris].color}` : ''}">
         <span class="puissance-nom">${pu.nom}</span>
         <span class="puissance-villes">★ ${villes}</span>
-        ${pris !== null ? `<span class="puissance-owner">${joueurTag(pris)}</span><span class="badge">Région intégrée</span>` : ''}
+        ${pris !== null ? `<span class="puissance-owner">${joueurTag(pris)}</span>` : ''}
       </button>`;
     }).join('')}</div>`;
+  } else if (partie.phase === 'territoires') {
+    const j = joueurCourant(partie);
+    const puissance = PUISSANCES.find((pu) => pu.id === partie.joueurs[j].puissance);
+    const n = CONFIG.territoiresDepart;
+    html += ligneOrdre();
+    html += `<div class="setup-title">Étape 3 — Territoires de départ</div>
+      <div class="setup-text">${tourDe(j)} : choisissez ${n} territoires de ${escapeHtml(puissance?.nom || 'votre région')} (touchez-les sur le globe ou ci-dessous) — ${territoiresDepartChoix.length}/${n}. Pas de région entière au départ, donc pas de bonus de région. <span class="dim">🏭 slot Industrie (atelier) · ★ ville</span></div>
+      <div class="setup-actions">${territoiresDepartPossibles(partie, j).map((id) => {
+        const t = TERRITOIRE_PAR_ID[id];
+        const tags = `${t.slotIndustrie ? ' 🏭' : ''}${t.ville ? ' ★' : ''}`;
+        return `<button class="btn${territoiresDepartChoix.includes(id) ? ' btn-chosen' : ''}" data-depart="${id}" style="--c:${PLAYERS[j].color}">${escapeHtml(t.nom)}${tags}</button>`;
+      }).join('')}</div>
+      <div class="setup-actions" style="margin-top:8px">
+        <button class="btn btn-primary" data-action="confirmer-territoires" ${peutChoisirTerritoiresDepart(partie, territoiresDepartChoix) ? '' : 'disabled'}>Confirmer</button>
+        <button class="btn" data-action="annuler-choix" ${territoiresDepartChoix.length ? '' : 'disabled'}>Annuler</button>
+      </div>`;
+  } else if (partie.phase === 'port') {
+    const j = joueurCourant(partie);
+    const nom = (id) => `<b>${escapeHtml(TERRITOIRE_PAR_ID[id].nom)}</b>`;
+    const reserve = partie.joueurs[j].reserve;
+    html += ligneOrdre();
+    html += `<div class="setup-title">Étape 7 — Port et premier bateau</div>`;
+    if (!portChoix.territoire) {
+      html += `<div class="setup-text">${tourDe(j)} : touchez un de vos territoires côtiers (en surbrillance) pour y construire un port.</div>
+        <div class="setup-actions">${territoiresPourPort(partie, j).map((id) => `<button class="btn" data-port="${id}">⚓ ${escapeHtml(TERRITOIRE_PAR_ID[id].nom)}</button>`).join('')}</div>`;
+    } else {
+      const bateaux = [['navires', 'Bateau de guerre'], ['transports', 'Bateau de transport']];
+      html += `<div class="setup-text">${tourDe(j)} — port à ${nom(portChoix.territoire)} : ${portChoix.mer ? `bateau en ${nom(portChoix.mer)}.` : 'touchez la case mer voisine où placer votre bateau.'}</div>
+        <div class="setup-actions">${mersVoisines(portChoix.territoire).map((mer) => `<button class="btn${portChoix.mer === mer ? ' btn-chosen' : ''}" data-mer="${mer}" style="--c:${PLAYERS[j].color}">🌊 ${escapeHtml(TERRITOIRE_PAR_ID[mer].nom)}</button>`).join('')}</div>
+        <div class="setup-actions" style="margin-top:8px">${bateaux.map(([type, label]) => `<button class="btn${portChoix.type === type ? ' btn-chosen' : ''}" data-bateau="${type}" style="--c:${PLAYERS[j].color}" ${reserve[type] > 0 ? '' : 'disabled'}>${label} (${reserve[type] ?? 0})</button>`).join('')}</div>`;
+    }
+    html += `<div class="setup-actions" style="margin-top:8px">
+        <button class="btn btn-primary" data-action="confirmer-port" ${peutPlacerPort(partie, portChoix.territoire, portChoix.mer, portChoix.type) ? '' : 'disabled'}>Confirmer</button>
+        <button class="btn" data-action="annuler-choix" ${portChoix.territoire ? '' : 'disabled'}>Annuler</button>
+      </div>`;
   } else if (partie.phase === 'atelier') {
     const j = joueurCourant(partie);
     html += ligneOrdre();
-    html += `<div class="setup-title">Étape 3 — Atelier de départ</div>`;
+    html += `<div class="setup-title">Étape 4 — Atelier de départ</div>`;
     if (!atelierChoix.territoireId) {
       const possibles = territoiresPourAtelier(partie, j);
       html += `<div class="setup-text">${tourDe(j)} : touchez un de vos territoires en surbrillance (slot Industrie libre) pour y poser votre usine gratuite.</div>
@@ -1631,7 +1681,7 @@ function renderSetupCard() {
   } else if (partie.phase === 'ville') {
     const j = joueurCourant(partie);
     html += ligneOrdre();
-    html += `<div class="setup-title">Étape 4 — Ville de départ</div>
+    html += `<div class="setup-title">Étape 5 — Ville de départ</div>
       <div class="setup-text">${tourDe(j)} : choisissez votre ville de départ parmi celles de votre région (touchez-la sur le globe ou ci-dessous).</div>
       <div class="setup-actions">${villesPossibles(partie, j).map((id) => {
         const t = TERRITOIRE_PAR_ID[id];
@@ -1649,7 +1699,7 @@ function renderSetupCard() {
     else if (!railChoix.b) consigne = `rail depuis ${nom(railChoix.a)} : touchez maintenant un territoire voisin en surbrillance.`;
     else consigne = `rail ${nom(railChoix.a)} ⟷ ${nom(railChoix.b)} : confirmez pour le poser.`;
     html += ligneOrdre();
-    html += `<div class="setup-title">Étape 5 — Rail de départ</div>
+    html += `<div class="setup-title">Étape 6 — Rail de départ</div>
       <div class="setup-text">${tourDe(j)} : ${consigne}</div>
       <div class="setup-actions">
         <button class="btn btn-primary" data-action="confirmer-rail" ${peutPoserRail(partie, railChoix.a, railChoix.b) ? '' : 'disabled'}>Confirmer</button>
@@ -1674,13 +1724,34 @@ setupCard.addEventListener('click', (ev) => {
     choisirPuissance(partie, puissance.id);
     showToast(`${PLAYERS[joueur].name} prend ${puissance.nom} — région intégrée`);
     flyToRegion(puissance.region);
-    if (partie.phase === 'atelier') flyToPlayer(joueurCourant(partie));
+    if (partie.phase === 'territoires') flyToPlayer(joueurCourant(partie));
   } else if (btn.dataset.territoire) {
     choisirTerritoireAtelier(btn.dataset.territoire);
   } else if (btn.dataset.ressource) {
     atelierChoix.ressource = btn.dataset.ressource;
   } else if (btn.dataset.action === 'annuler-atelier') {
     atelierChoix = { territoireId: null, ressource: null };
+  } else if (btn.dataset.depart) {
+    basculerTerritoireDepart(btn.dataset.depart);
+  } else if (btn.dataset.action === 'confirmer-territoires') {
+    const joueur = joueurCourant(partie);
+    const noms = territoiresDepartChoix.map((id) => TERRITOIRE_PAR_ID[id].nom).join(' et ');
+    choisirTerritoiresDepart(partie, territoiresDepartChoix);
+    showToast(`${PLAYERS[joueur].name} : ${noms}`);
+    reinitialiserChoix();
+    apresEtape();
+  } else if (btn.dataset.port) {
+    portChoix = { territoire: btn.dataset.port, mer: null, type: portChoix.type };
+  } else if (btn.dataset.mer) {
+    portChoix.mer = btn.dataset.mer;
+  } else if (btn.dataset.bateau) {
+    portChoix.type = btn.dataset.bateau;
+  } else if (btn.dataset.action === 'confirmer-port') {
+    const joueur = joueurCourant(partie);
+    placerPort(partie, portChoix.territoire, portChoix.mer, portChoix.type);
+    showToast(`${PLAYERS[joueur].name} : port à ${TERRITOIRE_PAR_ID[portChoix.territoire].nom}, bateau en ${TERRITOIRE_PAR_ID[portChoix.mer].nom}`);
+    reinitialiserChoix();
+    apresEtape();
   } else if (btn.dataset.ville) {
     villeChoix = btn.dataset.ville;
   } else if (btn.dataset.action === 'annuler-choix') {
@@ -1719,6 +1790,13 @@ function apresEtape() {
 function choisirTerritoireAtelier(id) {
   atelierChoix = { territoireId: id, ressource: null };
   selectedId = null;
+}
+
+// Territoires de départ : toucher un territoire le sélectionne ou le désélectionne (au plus
+// CONFIG.territoiresDepart).
+function basculerTerritoireDepart(id) {
+  if (territoiresDepartChoix.includes(id)) territoiresDepartChoix = territoiresDepartChoix.filter((x) => x !== id);
+  else if (territoiresDepartChoix.length < CONFIG.territoiresDepart) territoiresDepartChoix = [...territoiresDepartChoix, id];
 }
 
 // Étape du rail : premier territoire touché, puis un voisin ; retoucher le premier l'annule,
@@ -1769,6 +1847,11 @@ function renderInfoCard() {
     lignes.push(`<div class="info-row">Ressources : ${ressources.length ? ressources.map((r) => `${iconeRessource(r)}${r}`).join(' ') : '—'}</div>`);
     lignes.push(`<div class="info-row">Centre urbain : ${t.ville ? `★ ${escapeHtml(t.ville.nom)}${partie.villes[t.id] !== undefined ? ` (${joueurTag(partie.villes[t.id])})` : ''}` : '—'}</div>`);
     lignes.push(`<div class="info-row">Slot Industrie : ${t.slotIndustrie ? (usine ? `occupé — usine de ${joueurTag(usine.joueur)}, jeton ${usine.jetons.join(', ')}` : 'libre') : '—'}</div>`);
+    const port = partie.ports[t.id];
+    if (port) lignes.push(`<div class="info-row">Port : ⚓ ${joueurTag(port.joueur)}, vers ${escapeHtml(TERRITOIRE_PAR_ID[port.mer].nom)}</div>`);
+  } else {
+    const bateaux = partie.bateaux.filter((b) => b.mer === t.id);
+    lignes.push(`<div class="info-row">Bateaux : ${bateaux.length ? bateaux.map((b) => `${b.type === 'navires' ? 'guerre' : 'transport'} (${joueurTag(b.joueur)})`).join(', ') : '—'}</div>`);
   }
   let actions = '';
   const moi = joueurActif();
@@ -1777,7 +1860,7 @@ function renderInfoCard() {
   } else if (owner !== undefined && owner === moi) {
     actions = '<div class="info-note">Votre territoire (actions à venir).</div>';
   } else if (partie.phase === 'jeu' && t.type !== 'maritime') {
-    actions = `<div class="setup-actions"><button class="btn btn-primary" data-action="envahir">Envahir → ${PLAYERS[moi].name}</button></div>`;
+    actions = '<div class="info-note">Territoire neutre : il se colonise en y construisant un bâtiment (à venir).</div>';
   }
   infoCard.innerHTML = `<button class="info-close" data-action="fermer" aria-label="Fermer">×</button>
     <div class="info-title">${escapeHtml(t.nom)}</div>${lignes.join('')}${actions}`;
@@ -1788,11 +1871,6 @@ infoCard.addEventListener('click', (ev) => {
   const btn = ev.target.closest('button');
   if (!btn) return;
   if (btn.dataset.action === 'fermer') clearSelection();
-  else if (btn.dataset.action === 'envahir' && selectedId) {
-    assignTerritoire(selectedId);
-    selectedId = null;
-    renderAll();
-  }
 });
 
 // Un territoire touché sur le globe (ou sa ville) : à l'étape de l'atelier, un territoire en
@@ -1810,6 +1888,27 @@ function handleTerritoryClick(id) {
     choisirTerritoireAtelier(id);
     renderAll();
     return;
+  }
+  if (partie.phase === 'territoires' && territoiresEnSurbrillance().includes(id)) {
+    basculerTerritoireDepart(id);
+    selectedId = null;
+    renderAll();
+    return;
+  }
+  if (partie.phase === 'port') {
+    const j = joueurCourant(partie);
+    if (portChoix.territoire && mersVoisines(portChoix.territoire).includes(id)) {
+      portChoix.mer = id;
+      selectedId = null;
+      renderAll();
+      return;
+    }
+    if (territoiresPourPort(partie, j).includes(id)) {
+      portChoix = { territoire: id, mer: null, type: portChoix.type };
+      selectedId = null;
+      renderAll();
+      return;
+    }
   }
   if (partie.phase === 'ville' && territoiresEnSurbrillance().includes(id)) {
     villeChoix = id;
@@ -2013,7 +2112,18 @@ function buildMarkerElement(d) {
   group.className = 'poi-group';
   anchor.appendChild(group);
 
-  if (d.type === 'city') {
+  if (d.type === 'port' || d.type === 'bateau') {
+    // Port (ancre) / bateau : carré plein à la couleur du joueur, symbole en blanc.
+    const marker = document.createElement('div');
+    marker.className = `poi-marker occupied${d.type === 'bateau' ? ' poi-marker--boat' : ''}`;
+    marker.style.background = PLAYERS[d.joueur].color;
+    marker.style.borderColor = PLAYERS[d.joueur].color;
+    const cle = d.type === 'port' ? 'ports' : d.bateau;
+    marker.innerHTML = RESERVE_ITEMS.find((it) => it.key === cle)?.svg || '';
+    marker.title = d.type === 'port' ? `Port — ${TERRITOIRE_PAR_ID[d.territoireId].nom}` : `${d.bateau === 'navires' ? 'Bateau de guerre' : 'Bateau de transport'} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
+    marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; handleTerritoryClick(d.territoireId); };
+    group.appendChild(marker);
+  } else if (d.type === 'city') {
     const marker = document.createElement('div');
     // Ville possédée : sa maquette 3D (voir objects3d) prend le relais de l'icône en zoomant.
     const proprioVille = partie.villes[d.territoireId];
@@ -2059,17 +2169,80 @@ function updatePoiScale({ altitude }) {
   setModels3dVisible(altitude < MODEL_ALT_VISIBLE);
 }
 
-// Appelée uniquement depuis le bouton "Envahir" (confirmation explicite).
-function assignTerritoire(id) {
-  const region = TERRITOIRE_PAR_ID[id]?.region;
-  partie.proprietaire[id] = activePlayer;
-
-  const ids = territoiresParRegion[region] || [];
-  if (ids.length && ids.every((tid) => partie.proprietaire[tid] === activePlayer)) {
-    partie.regionsIntegrees[region] = { joueur: activePlayer, bonus: { ...CONFIG.bonusRegionIntegree } };
-    showToast(`Région intégrée : ${region} → +3 pts pour ${PLAYERS[activePlayer].name}`);
+// Ports et bateaux : marqueurs calculés à chaque rafraîchissement (ils changent en cours de
+// partie). Le port se pose sur la côte de son territoire, face à la case mer qu'il dessert ; le
+// bateau juste au large, dans cette case mer.
+const portPointCache = new Map();
+function pointDuPort(territoireId, mer) {
+  const cle = `${territoireId}|${mer}`;
+  if (portPointCache.has(cle)) return portPointCache.get(cle);
+  const terre = displayGeometryById.get(territoireId);
+  const eau = displayGeometryById.get(mer);
+  const repere = pointInfrastructure(territoireId) || labelAnchorById.get(territoireId);
+  // Ne pas poser le port sur la ville ou l'usine du territoire (marqueurs superposés).
+  const occupes = markersData.filter((m) => m.territoireId === territoireId).map((m) => {
+    const [x, y] = projection([m.lon, m.lat]);
+    return { x, y };
+  });
+  const tropPres = ([x, y]) => occupes.some((o) => Math.hypot(o.x - x, o.y - y) < 28);
+  let meilleur = null;
+  if (terre && eau && repere) {
+    // Sommets de la côte du territoire qui bordent cette case mer (à 3 px près)…
+    const segments = [];
+    for (const poly of eau) for (const ring of poly) for (let i = 0; i < ring.length - 1; i++) segments.push([ring[i], ring[i + 1]]);
+    const distSeg = ([px, py], [[x1, y1], [x2, y2]]) => {
+      const vx = x2 - x1, vy = y2 - y1;
+      const l2 = vx * vx + vy * vy;
+      const k = l2 ? Math.max(0, Math.min(1, ((px - x1) * vx + (py - y1) * vy) / l2)) : 0;
+      return Math.hypot(px - (x1 + k * vx), py - (y1 + k * vy));
+    };
+    let meilleureDist = Infinity;
+    for (const poly of terre) for (const ring of poly) for (const pt of ring) {
+      const d = Math.hypot(pt[0] - repere.x, pt[1] - repere.y);
+      if (d >= meilleureDist || tropPres(pt)) continue;
+      if (segments.some((seg) => distSeg(pt, seg) <= 3)) { meilleur = { x: pt[0], y: pt[1] }; meilleureDist = d; }
+    }
   }
-  renderAll();
+  // … celui le plus proche du cœur du territoire (sa ville, son usine, son nom).
+  const resultat = meilleur || repere;
+  portPointCache.set(cle, resultat);
+  return resultat;
+}
+function pointAuLarge(portPt, mer, rang) {
+  const eau = displayGeometryById.get(mer);
+  const cible = labelAnchorById.get(mer);
+  if (!eau || !cible || !portPt) return cible || portPt;
+  const dans = (x, y) => booleanPointInPolygon([x, y], { type: 'MultiPolygon', coordinates: eau });
+  const dx = cible.x - portPt.x, dy = cible.y - portPt.y;
+  const len = Math.hypot(dx, dy) || 1;
+  // Premier point dans la mer, à au moins ~25 px de texture (≈ 250 km) de la côte, vers le centre
+  // de la case — bien détaché du port.
+  for (let t = 25 + rang * 14; t < len; t += 3) {
+    const x = portPt.x + (dx / len) * t, y = portPt.y + (dy / len) * t;
+    if (dans(x, y)) return { x, y };
+  }
+  return cible;
+}
+function marqueursPortsEtBateaux() {
+  const out = [];
+  const versLonLat = (p) => projection.invert([p.x, p.y]);
+  for (const [territoireId, port] of Object.entries(partie.ports)) {
+    const p = pointDuPort(territoireId, port.mer);
+    if (!p) continue;
+    const [lon, lat] = versLonLat(p);
+    out.push({ type: 'port', territoireId, joueur: port.joueur, lat, lon });
+  }
+  const parMer = {};
+  for (const b of partie.bateaux) {
+    const rang = (parMer[b.mer] = (parMer[b.mer] ?? -1) + 1);
+    const port = Object.entries(partie.ports).find(([, pt]) => pt.mer === b.mer && pt.joueur === b.joueur);
+    const depart = port ? pointDuPort(port[0], b.mer) : labelAnchorById.get(b.mer);
+    const p = pointAuLarge(depart, b.mer, rang);
+    if (!p) continue;
+    const [lon, lat] = versLonLat(p);
+    out.push({ type: 'bateau', territoireId: b.mer, joueur: b.joueur, bateau: b.type, lat, lon });
+  }
+  return out;
 }
 
 function renderAll() {
@@ -2078,7 +2251,7 @@ function renderAll() {
   // déjà (même objet), sans rappeler buildMarkerElement — il faut donc lui passer des COPIES
   // pour qu'il les reconstruise avec l'état à jour (couleur du propriétaire, slot occupé,
   // jeton, maquette 3D).
-  world.htmlElementsData(markersData.map((d) => ({ ...d })));
+  world.htmlElementsData([...markersData.map((d) => ({ ...d })), ...marqueursPortsEtBateaux()]);
   refreshObjects3d();
 
   renderReservePanel();

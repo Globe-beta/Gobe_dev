@@ -463,6 +463,10 @@ html, body {
 
 /* Slot Industrie occupé / ville possédée : carré plein à la couleur du joueur, icône en blanc. */
 .poi-marker.occupied > svg { fill: #fff; }
+/* Symboles dessinés au trait (ancre du port) : trait blanc plutôt que remplissage. */
+.poi-marker.occupied > svg[stroke] { fill: none; stroke: #fff; }
+/* Bateau : carré aux coins plus arrondis, pour le distinguer d'un bâtiment. */
+.poi-marker--boat { border-radius: 50%; }
 .poi-resource-icon { position: relative; }
 /* Zoomé (voir setModels3dVisible) : la maquette 3D remplace l'icône au même endroit ; seule
    l'icône disparaît, les ressources (dont celle produite, en couleur) restent affichées dessous. */
@@ -473,6 +477,8 @@ html, body {
   /* Sur téléphone : ancré à gauche, arrêté avant la colonne de réserve (à droite), et
      au-dessus du bouton "Légende" (en bas à gauche). */
   .dock { bottom: 64px; left: 8px; transform: none; width: calc(100vw - 16px - 70px); }
+  .dock-card { max-height: 58vh; padding: 8px 10px; }
+  .dock-card .btn { padding: 7px 10px; }
   .puissances { grid-template-columns: 1fr; }
   .puissance-card { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 10px; }
 }

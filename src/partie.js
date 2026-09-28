@@ -2,10 +2,14 @@
 // main.js pour l'interface), pour pouvoir les lire, les tester et les faire évoluer à part.
 //
 // Déroulé : 'ordre' (tirage de l'ordre de jeu) → 'puissances' (chaque joueur choisit une
-// puissance, dans l'ordre tiré) → 'atelier' (chaque joueur pose son usine de départ) → 'ville'
-// (chaque joueur choisit sa ville de départ parmi celles de sa région) → 'rail' (chaque joueur
-// pose un rail entre deux de ses territoires voisins) → 'jeu'. Chaque étape se joue dans l'ordre
-// tiré ; un joueur qui n'a aucun choix possible à une étape est passé.
+// puissance) → 'territoires' (chaque joueur prend CONFIG.territoiresDepart territoires de la
+// région de sa puissance — pas la région entière : pas de région intégrée, donc pas de bonus, au
+// départ) → 'atelier' (usine de départ) → 'ville' (ville de départ) → 'rail' (un rail) → 'port'
+// (un port et un premier bateau sur une case mer voisine) → 'jeu'. Chaque étape se joue dans
+// l'ordre tiré ; un joueur qui n'a aucun choix possible à une étape est passé.
+//
+// Par la suite, un territoire neutre ne se colonise qu'en y construisant un bâtiment (règle à
+// venir) : rien ici ne donne un territoire en dehors du choix de départ.
 
 import { CONFIG, PUISSANCES } from './config.js';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
@@ -41,6 +45,10 @@ export function nouvellePartie(reserveInitiale = {}) {
     usines: {},
     // Rails posés : { joueur, a, b } relie les territoires a et b.
     rails: [],
+    // territoireId -> { joueur, mer } pour chaque port (mer = case mer qu'il dessert).
+    ports: {},
+    // Bateaux : { joueur, type: 'navires' | 'transports', mer }.
+    bateaux: [],
   };
 }
 
@@ -66,8 +74,8 @@ export function puissancePrisePar(partie, puissanceId) {
   return i >= 0 ? i : null;
 }
 
-// Étape 2 : le joueur courant prend une puissance libre — tous les territoires de sa région,
-// la région intégrée (bonus activés) et ses villes de départ.
+// Étape 2 : le joueur courant prend une puissance libre. Il n'en reçoit pas encore de
+// territoires : il en choisira CONFIG.territoiresDepart dans sa région à l'étape suivante.
 export function choisirPuissance(partie, puissanceId) {
   if (partie.phase !== 'puissances') throw new Error("Ce n'est pas le moment de choisir une puissance.");
   const puissance = PUISSANCES.find((p) => p.id === puissanceId);
@@ -76,19 +84,53 @@ export function choisirPuissance(partie, puissanceId) {
   const joueur = joueurCourant(partie);
 
   partie.joueurs[joueur].puissance = puissanceId;
-  for (const t of TERRITOIRES) {
-    if (t.region === puissance.region) partie.proprietaire[t.id] = joueur;
-  }
-  partie.regionsIntegrees[puissance.region] = { joueur, bonus: { ...CONFIG.bonusRegionIntegree } };
-  // Les villes de la région ne sont pas attribuées ici : le joueur en choisit une à l'étape
-  // 'ville' (voir choisirVille).
 
   partie.tour += 1;
   // Tous les joueurs ont une puissance (ou il n'y en a plus à prendre) : étape suivante.
   if (partie.tour >= partie.ordre.length || PUISSANCES.every((p) => puissancePrisePar(partie, p.id) !== null)) {
-    partie.phase = 'atelier';
+    partie.phase = 'territoires';
     partie.tour = 0;
   }
+}
+
+// Une région est intégrée quand un même joueur possède tous ses territoires (bonus de région).
+// Recalculé après chaque changement de propriétaire.
+export function majRegionsIntegrees(partie) {
+  const parRegion = {};
+  for (const t of TERRITOIRES) (parRegion[t.region] ??= []).push(t.id);
+  for (const [region, ids] of Object.entries(parRegion)) {
+    const j = partie.proprietaire[ids[0]];
+    const integree = j !== undefined && ids.every((id) => partie.proprietaire[id] === j);
+    if (integree && partie.regionsIntegrees[region]?.joueur !== j) {
+      partie.regionsIntegrees[region] = { joueur: j, bonus: { ...CONFIG.bonusRegionIntegree } };
+    } else if (!integree) {
+      delete partie.regionsIntegrees[region];
+    }
+  }
+}
+
+// Étape 2 bis : territoires de départ — ceux de la région de sa puissance, encore libres.
+export function territoiresDepartPossibles(partie, joueur) {
+  const puissance = PUISSANCES.find((p) => p.id === partie.joueurs[joueur]?.puissance);
+  if (!puissance) return [];
+  return TERRITOIRES
+    .filter((t) => t.region === puissance.region && t.type !== 'maritime' && partie.proprietaire[t.id] === undefined)
+    .map((t) => t.id);
+}
+
+export function peutChoisirTerritoiresDepart(partie, ids) {
+  if (partie.phase !== 'territoires' || !Array.isArray(ids)) return false;
+  const possibles = territoiresDepartPossibles(partie, joueurCourant(partie));
+  const nb = Math.min(CONFIG.territoiresDepart, possibles.length);
+  return new Set(ids).size === nb && ids.length === nb && ids.every((id) => possibles.includes(id));
+}
+
+export function choisirTerritoiresDepart(partie, ids) {
+  if (!peutChoisirTerritoiresDepart(partie, ids)) throw new Error(`Choisissez ${CONFIG.territoiresDepart} territoires de votre région.`);
+  const joueur = joueurCourant(partie);
+  for (const id of ids) partie.proprietaire[id] = joueur;
+  majRegionsIntegrees(partie);
+  passerAuJoueurSuivant(partie);
 }
 
 // Étape 3 : territoires où le joueur peut poser son usine de départ — les siens, avec un slot
@@ -127,11 +169,13 @@ export function placerAtelier(partie, territoireId, ressource) {
   passerAuJoueurSuivant(partie);
 }
 
-// Enchaînement des étapes posées une fois par joueur (atelier, ville, rail) : joueur suivant
-// dans l'ordre tiré ; à la fin du tour de table, étape suivante. Un joueur sans aucun choix
-// possible à une étape est passé automatiquement.
-const ETAPES_PAR_JOUEUR = ['atelier', 'ville', 'rail'];
+// Enchaînement des étapes jouées une fois par joueur : joueur suivant dans l'ordre tiré ; à la
+// fin du tour de table, étape suivante. Un joueur sans aucun choix possible à une étape (ex. pas
+// de territoire avec slot Industrie, pas de côte) est passé automatiquement.
+const ETAPES_PAR_JOUEUR = ['territoires', 'atelier', 'ville', 'rail', 'port'];
 function aUnChoix(partie, joueur) {
+  if (partie.phase === 'territoires') return territoiresDepartPossibles(partie, joueur).length > 0;
+  if (partie.phase === 'port') return territoiresPourPort(partie, joueur).length > 0;
   if (partie.phase === 'atelier') return territoiresPourAtelier(partie, joueur).length > 0;
   if (partie.phase === 'ville') return villesPossibles(partie, joueur).length > 0;
   if (partie.phase === 'rail') return territoiresPourRail(partie, joueur).length > 0;
@@ -212,5 +256,39 @@ export function peutPoserRail(partie, a, b) {
 export function placerRail(partie, a, b) {
   if (!peutPoserRail(partie, a, b)) throw new Error('Rail impossible entre ces deux territoires.');
   partie.rails.push({ joueur: joueurCourant(partie), a, b });
+  passerAuJoueurSuivant(partie);
+}
+
+// Étape 6 : port et premier bateau. Le port se pose sur un territoire du joueur voisin d'au
+// moins une case mer ; le bateau (de guerre ou de transport, pris dans sa réserve) se place sur
+// une de ces cases mer voisines.
+export const TYPES_BATEAU = ['navires', 'transports'];
+const casesMer = TERRITOIRES.filter((t) => t.type === 'maritime').map((t) => t.id);
+
+export function mersVoisines(territoireId) {
+  return casesMer.filter((mer) => sontVoisins(territoireId, mer));
+}
+
+export function territoiresPourPort(partie, joueur) {
+  return territoiresTerrestres.filter((id) => partie.proprietaire[id] === joueur && !partie.ports[id] && mersVoisines(id).length > 0);
+}
+
+export function peutPlacerPort(partie, territoireId, mer, typeBateau) {
+  if (partie.phase !== 'port' || !territoireId || !mer || !TYPES_BATEAU.includes(typeBateau)) return false;
+  const joueur = joueurCourant(partie);
+  if (!territoiresPourPort(partie, joueur).includes(territoireId)) return false;
+  if (!mersVoisines(territoireId).includes(mer)) return false;
+  const reserve = partie.joueurs[joueur].reserve;
+  return !(typeBateau in reserve) || reserve[typeBateau] > 0;
+}
+
+export function placerPort(partie, territoireId, mer, typeBateau) {
+  if (!peutPlacerPort(partie, territoireId, mer, typeBateau)) throw new Error('Port ou case mer invalide.');
+  const joueur = joueurCourant(partie);
+  const reserve = partie.joueurs[joueur].reserve;
+  partie.ports[territoireId] = { joueur, mer };
+  partie.bateaux.push({ joueur, type: typeBateau, mer });
+  if (reserve.ports > 0) reserve.ports -= 1;
+  if (reserve[typeBateau] > 0) reserve[typeBateau] -= 1;
   passerAuJoueurSuivant(partie);
 }
