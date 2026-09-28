@@ -70,30 +70,44 @@ export const TERRITOIRES = [
   // déjà des rectangles disjoints qui se touchent pile à leur frontière commune : pas besoin de
   // partage géométrique (Voronoï) entre elles, juste soustraire la terre qui les recouvre
   // (main.js) pour que leur bord côtier suive la vraie côte. Pas de ville ni d'usine. ---
-  { id: 'mer-arctique-ouest', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-norvege', bloc: 'Maritime', region: 'Arctique', nom: 'Mer de Norvège', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-arctique-est', bloc: 'Maritime', region: 'Arctique', nom: 'Mers de Barents et de Kara', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-arctique-siberie', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique sibérien', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-arctique-ouest', bloc: 'Maritime', region: 'Arctique', nom: 'Mer de Beaufort', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-baffin', bloc: 'Maritime', region: 'Arctique', nom: 'Baies de Baffin et d\'Hudson', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-arctique-centre', bloc: 'Maritime', region: 'Arctique', nom: 'Océan Arctique central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-arctique-est', bloc: 'Maritime', region: 'Arctique', nom: 'Arctique oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
-  { id: 'mer-atlantiquenord-ouest', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-atlantiquenord-centre', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
-  { id: 'mer-atlantiquenord-est', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-nord-baltique', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Mer du Nord et Baltique', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantiquenord-est', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantiquenord-centre', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantiquenord-ouest', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-sargasses', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Mer des Sargasses', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantique-tropical', bloc: 'Maritime', region: 'Atlantique Nord', nom: 'Atlantique tropical', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
   { id: 'mer-atlantiquesud-ouest', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique Sud-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantique-australouest', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique austral occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-atlantiquesud-est', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique Sud-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-atlantique-australest', bloc: 'Maritime', region: 'Atlantique Sud', nom: 'Atlantique austral oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
+  { id: 'mer-chine-est', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Mers de Chine orientale et du Japon', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-chine-sud', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Mer de Chine méridionale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-pacifiquenord-ouest', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Pacifique Nord-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-pacifique-nordcentral', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Pacifique Nord central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-pacifiquenord-est', bloc: 'Maritime', region: 'Pacifique Nord', nom: 'Pacifique Nord-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
+  { id: 'mer-australie', bloc: 'Maritime', region: 'Pacifique Sud', nom: 'Mers d\'Australie', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-pacifiquesud-ouest', bloc: 'Maritime', region: 'Pacifique Sud', nom: 'Pacifique Sud-Ouest', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-pacifique-sudcentral', bloc: 'Maritime', region: 'Pacifique Sud', nom: 'Pacifique Sud central', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-pacifiquesud-est', bloc: 'Maritime', region: 'Pacifique Sud', nom: 'Pacifique Sud-Est', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
+  { id: 'mer-arabie', bloc: 'Maritime', region: 'Océan Indien', nom: 'Mer d\'Arabie', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-indien-ouest', bloc: 'Maritime', region: 'Océan Indien', nom: 'Océan Indien occidental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-bengale', bloc: 'Maritime', region: 'Océan Indien', nom: 'Golfe du Bengale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-indien-est', bloc: 'Maritime', region: 'Océan Indien', nom: 'Océan Indien oriental', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
   { id: 'mer-mediterranee-ouest', bloc: 'Maritime', region: 'Méditerranée', nom: 'Méditerranée occidentale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-mediterranee-est', bloc: 'Maritime', region: 'Méditerranée', nom: 'Méditerranée orientale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
+  { id: 'mer-noire', bloc: 'Maritime', region: 'Méditerranée', nom: 'Mer Noire', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
 
   { id: 'mer-caraibes-ouest', bloc: 'Maritime', region: 'Mer des Caraïbes', nom: 'Mer des Caraïbes occidentale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },
   { id: 'mer-caraibes-est', bloc: 'Maritime', region: 'Mer des Caraïbes', nom: 'Mer des Caraïbes orientale', type: 'maritime', ressources: [], enclavement: 0, slotIndustrie: 0, ville: null },

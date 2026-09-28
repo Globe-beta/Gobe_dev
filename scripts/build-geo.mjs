@@ -354,6 +354,8 @@ for (const [territoireId, feats] of Object.entries(byTerritoire)) {
 // l'antiméridien fait basculer le pré-découpage antiméridien de d3-geo (main.js) dans un cas
 // limite qui produit un anneau dégénéré ("invalid polygon, fewer than 4 points" pendant la
 // simplification). Écart invisible à l'échelle du plateau (~11 km à l'équateur).
+// Rectangle [lon0, lat0] → [lon1, lat1], sous forme de liste de sommets.
+const R = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 const MARITIME_ZONES = [
   // Mer du Nord et Baltique : fermée au nord par un trait horizontal nord de l'Écosse → côte
   // norvégienne (58.5°N), et au sud-ouest par le Pas de Calais ; le reste du contour passe par
@@ -368,44 +370,79 @@ const MARITIME_ZONES = [
   // 25°E) → Svalbard, au nord par l'Océan Arctique central (79.5°N). La côte norvégienne à l'est
   // de ce trait (jusqu'à la frontière russe) reste bordée par l'Arctique oriental.
   ['mer-norvege', [[-40, 66], [-40, 79.5], [25, 79.5], [25, 70.5], [18, 67], [13.5, 65], [-15, 65], [-21.5, 65.3], [-22, 65.8], [-23.3, 66]]],
-  // Arctique oriental : le long de la Russie, du trait Norvège → Svalbard au trait vertical
-  // Tchoukotka → île Wrangel (180°), mer Blanche comprise ; contour sud par les terres.
-  ['mer-arctique-est', [[25, 70.5], [25, 79.5], [179.9, 79.5], [179.9, 67], [140, 64], [80, 62], [45, 62], [34, 62], [30, 64], [27, 68]]],
-  // Arctique occidental : Alaska, Canada, baie de Baffin ; bordé au sud par le 66e parallèle
-  // (détroits de Béring et de Davis), à l'est par le Groenland.
-  ['mer-arctique-ouest', [[-179.9, 66], [-40, 66], [-40, 79.5], [-179.9, 79.5]]],
+  // Mers de Barents et de Kara : le long de la Russie, du trait Norvège → Svalbard au trait
+  // vertical 100°E (Taïmyr → Severnaïa Zemlia), mer Blanche comprise ; contour sud par les terres.
+  ['mer-arctique-est', [[25, 70.5], [25, 79.5], [100, 79.5], [100, 62], [80, 62], [45, 62], [34, 62], [30, 64], [27, 68]]],
+  // Arctique sibérien : de 100°E au trait Tchoukotka → île Wrangel (180°).
+  ['mer-arctique-siberie', [[100, 62], [100, 79.5], [179.9, 79.5], [179.9, 67], [140, 64]]],
+  // Mer de Beaufort : Alaska et archipel canadien de l'ouest, jusqu'à 100°O.
+  ['mer-arctique-ouest', R(-179.9, 66, -100, 79.5)],
+  // Baies de Baffin et d'Hudson : de 100°O au Groenland, baie d'Hudson et détroit d'Hudson
+  // compris (fermée au sud par la côte du Québec, à l'est par un trait vertical à 64°O jusqu'au
+  // cercle polaire).
+  ['mer-baffin', [[-100, 51], [-75, 51], [-75, 60], [-64, 60], [-64, 66], [-40, 66], [-40, 79.5], [-100, 79.5]]],
   // Océan Arctique central : la calotte au nord de 79.5°N (entre Groenland, Svalbard, Severnaïa
   // Zemlia et l'archipel canadien). Écrite ici en rectangle (valide à plat, pour le reste du
   // script) ; main.js la redessine en anneau autour du pôle (voir polarCapGeometry).
-  ['mer-arctique-centre', [[-179.9, 79.5], [179.9, 79.5], [179.9, 90], [-179.9, 90]]],
+  ['mer-arctique-centre', R(-179.9, 79.5, 179.9, 90)],
 
   // Méditerranée occidentale : ne déborde plus dans le golfe de Gascogne (contour par
   // l'Espagne et la France), s'ouvre sur l'Atlantique au détroit de Gibraltar (-5.9°).
   ['mer-mediterranee-ouest', [[-5.9, 30], [15, 30], [15, 46], [3, 46], [0, 43.5], [-2, 42.5], [-5.9, 36.3]]],
-  ['mer-mediterranee-est', [[15, 30], [36, 30], [36, 46], [15, 46]]],
+  // Mer Noire (et mer d'Azov) : détachée de la Méditerranée orientale au Bosphore (40.8°N).
+  ['mer-noire', R(27, 40.8, 42, 47.5)],
+  ['mer-mediterranee-est', R(15, 30, 36, 46)],
 
-  ['mer-caraibes-ouest', [[-98, 7], [-76, 7], [-76, 31], [-98, 31]]],
-  ['mer-caraibes-est', [[-76, 7], [-55, 7], [-55, 31], [-76, 31]]],
+  // Pacifique Nord-Est : côte ouest des Amériques, de 130°O jusqu'à l'isthme centraméricain.
+  // Son bord est suit la ligne de crête de l'isthme (Tehuantepec → Panama → Colombie), sur la
+  // terre : le Pacifique centraméricain n'appartient plus à la mer des Caraïbes.
+  ['mer-pacifiquenord-est', [[-130, 0], [-130, 66], [-100, 66], [-100, 20], [-94.5, 17], [-90.5, 15], [-86, 13.5], [-84, 10.5], [-80, 8.5], [-77.5, 8], [-76.5, 5], [-77.5, 0]]],
+
+  ['mer-caraibes-ouest', R(-98, 7, -76, 31)],
+  ['mer-caraibes-est', R(-76, 7, -55, 31)],
 
   // Atlantique Nord-Est (côtier) : à l'est d'un trait vertical partant de la côte sud de
   // l'Islande (18.9°O), qui tourne à angle droit à 31.5°N pour rejoindre la côte du Maroc
   // (Essaouira) ; au nord, le trait Islande → Norvège (65°N).
   ['mer-atlantiquenord-est', [[-18.9, 63.8], [-15, 65], [13.5, 65], [2, 51], [2, 50.5], [0, 45], [-2, 42.5], [-5.9, 36.3], [-5.9, 35.6], [-6, 34], [-8.5, 31.5], [-18.9, 31.5]]],
-  // Atlantique Nord central : le reste de l'ancien rectangle Nord-Est.
-  ['mer-atlantiquenord-centre', [[-40, 0], [0, 0], [0, 66], [-40, 66]]],
-  ['mer-atlantiquenord-ouest', [[-80, 0], [-40, 0], [-40, 66], [-80, 66]]],
+  // Atlantique tropical : de l'équateur à 20°N, du milieu de l'océan jusqu'au fond du golfe de
+  // Guinée (10°E).
+  ['mer-atlantique-tropical', R(-40, 0, 10, 20)],
+  // Atlantique Nord central : le large, au nord de 20°N.
+  ['mer-atlantiquenord-centre', R(-40, 20, 0, 66)],
+  // Atlantique Nord-Ouest (côte nord-américaine, Terre-Neuve, golfe du Saint-Laurent) au nord de
+  // 35°N ; mer des Sargasses au sud (Bermudes, Antilles côté océan, Guyanes).
+  ['mer-atlantiquenord-ouest', R(-80, 35, -40, 66)],
+  ['mer-sargasses', R(-80, 0, -40, 35)],
 
-  ['mer-atlantiquesud-ouest', [[-70, -60], [-25, -60], [-25, 0], [-70, 0]]],
-  ['mer-atlantiquesud-est', [[-25, -60], [20, -60], [20, 0], [-25, 0]]],
+  // Atlantique Sud, coupé à 30°S : côtes brésilienne et africaine au nord, eaux australes au sud
+  // (Argentine et Malouines à l'ouest, cap de Bonne-Espérance à l'est).
+  ['mer-atlantiquesud-ouest', R(-70, -30, -25, 0)],
+  ['mer-atlantique-australouest', R(-70, -60, -25, -30)],
+  ['mer-atlantiquesud-est', R(-25, -30, 20, 0)],
+  ['mer-atlantique-australest', R(-25, -60, 20, -30)],
 
-  ['mer-pacifiquenord-ouest', [[120, 0], [179.9, 0], [179.9, 66], [120, 66]]],
-  ['mer-pacifiquenord-est', [[-179.9, 0], [-100, 0], [-100, 66], [-179.9, 66]]],
+  // Mers de Chine orientale et du Japon : golfe de Bohai, mer Jaune, mer de Chine orientale,
+  // mer du Japon, au nord de 23°N (détroit de Taïwan), jusqu'à 145°E.
+  ['mer-chine-est', R(117, 23, 145, 66)],
+  // Mer de Chine méridionale et mers d'Insulinde : bord ouest sur la ligne de crête de la
+  // péninsule malaise et de Sumatra (détroit de Malacca compris), bord sud à 7°S (Java).
+  ['mer-chine-sud', [[100, 23], [125, 23], [125, -7], [107, -7], [104.5, -4], [101.5, 0.5], [98.7, 3.6], [99.3, 9.1], [98.5, 16]]],
+  ['mer-pacifiquenord-ouest', R(125, 0, 179.9, 66)],
+  ['mer-pacifique-nordcentral', R(-179.9, 0, -130, 66)],
 
-  ['mer-pacifiquesud-ouest', [[120, -60], [179.9, -60], [179.9, 0], [120, 0]]],
-  ['mer-pacifiquesud-est', [[-179.9, -60], [-70, -60], [-70, 0], [-179.9, 0]]],
+  // Mers d'Australie : mer de Timor, d'Arafura, de Corail, de Tasman (jusqu'à 155°E).
+  ['mer-australie', R(120, -60, 155, 0)],
+  ['mer-pacifiquesud-ouest', R(155, -60, 179.9, 0)],
+  ['mer-pacifiquesud-est', R(-120, -60, -70, 0)],
+  ['mer-pacifique-sudcentral', R(-179.9, -60, -120, 0)],
 
-  ['mer-indien-ouest', [[20, -60], [70, -60], [70, 30], [20, 30]]],
-  ['mer-indien-est', [[70, -60], [120, -60], [120, 30], [70, 30]]],
+  // Océan Indien, coupé à 10°S : mer d'Arabie (mer Rouge, golfe Persique) et golfe du Bengale au
+  // nord ; les eaux du large au sud (Madagascar, ouest de l'Australie).
+  ['mer-arabie', R(20, -10, 70, 30)],
+  ['mer-indien-ouest', R(20, -60, 70, -10)],
+  ['mer-bengale', R(70, -10, 110, 30)],
+  ['mer-indien-est', R(70, -60, 120, -10)],
 ];
 // Chaque case perd aussi TOUTE la terre qu'elle recouvre (Natural Earth "land", pas seulement
 // les territoires du jeu) : sans ça, une terre hors jeu (Alaska, Canaries, Féroé, petites îles

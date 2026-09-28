@@ -14,8 +14,9 @@ import {
   territoiresPourAtelier, ressourcesPourAtelier, peutConfirmerAtelier, placerAtelier,
   villesPossibles, choisirVille, definirVoisinage, territoiresPourRail, peutPoserRail, placerRail,
   territoiresDepartPossibles, peutChoisirTerritoiresDepart, choisirTerritoiresDepart,
-  mersVoisines, territoiresPourPort, peutPlacerPort, placerPort,
+  mersVoisines, territoiresPourPort, peutPlacerPort, placerPort, mersConnectees, mersFermees,
 } from './partie.js';
+import { BARRIERES_MER, PASSAGES_MER } from './data/mers.js';
 import { construireVille, construireUsine } from './models3d.js';
 
 // Joueurs de la partie : leur nombre vient de la configuration (src/config.js).
@@ -835,6 +836,82 @@ function computeRegionBorderOverlay() {
   return overlay;
 }
 
+// Communications entre cases mer (voir data/mers.js), dessinées avec les frontières :
+// - barrière : la frontière commune des deux cases, en pointillé blanc épais (banquise…) ;
+// - canal : un trait doré à travers la terre, avec son nom.
+function drawSeaLinks(ctx) {
+  const distSeg = ([px, py], [[x1, y1], [x2, y2]]) => {
+    const vx = x2 - x1, vy = y2 - y1;
+    const l2 = vx * vx + vy * vy;
+    const k = l2 ? Math.max(0, Math.min(1, ((px - x1) * vx + (py - y1) * vy) / l2)) : 0;
+    return Math.hypot(px - (x1 + k * vx), py - (y1 + k * vy));
+  };
+  const w = TEX_W * 0.0014;
+  for (const { a, b } of BARRIERES_MER) {
+    const ma = displayGeometryById.get(a);
+    const mb = displayGeometryById.get(b);
+    if (!ma || !mb) continue;
+    const segB = [];
+    for (const poly of mb) for (const ring of poly) for (let i = 0; i < ring.length - 1; i++) segB.push([ring[i], ring[i + 1]]);
+    const [bx0, by0, bx1, by1] = bboxOfPixelMultiPoly(mb);
+    const pres = (pt) => pt[0] >= bx0 - 3 && pt[0] <= bx1 + 3 && pt[1] >= by0 - 3 && pt[1] <= by1 + 3 && segB.some((sg) => distSeg(pt, sg) <= 2.5);
+    ctx.beginPath();
+    for (const poly of ma) for (const ring of poly) {
+      for (let i = 0; i < ring.length - 1; i++) {
+        const p = ring[i], q = ring[i + 1];
+        if (onTextureEdge(p, q) || !pres(p) || !pres(q)) continue;
+        ctx.moveTo(p[0], p[1]);
+        ctx.lineTo(q[0], q[1]);
+      }
+    }
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(10, 30, 60, 0.9)';
+    ctx.lineWidth = w * 2.2;
+    ctx.stroke();
+    ctx.setLineDash([w * 2.2, w * 1.6]);
+    ctx.strokeStyle = '#eaf6ff';
+    ctx.lineWidth = w * 1.3;
+    ctx.stroke();
+    ctx.restore();
+  }
+  for (const passage of PASSAGES_MER) {
+    const pts = passage.trace.map(([lon, lat]) => projection([lon, lat]));
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const tracer = () => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.lineWidth = w * 2.4;
+    tracer();
+    ctx.strokeStyle = '#ffd24a';
+    ctx.lineWidth = w * 1.4;
+    ctx.setLineDash([w * 1.8, w * 1.2]);
+    tracer();
+    ctx.setLineDash([]);
+    for (const [x, y] of [pts[0], pts[pts.length - 1]]) {
+      ctx.beginPath();
+      ctx.arc(x, y, w * 1.6, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffd24a';
+      ctx.fill();
+      ctx.lineWidth = w * 0.6;
+      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+      ctx.stroke();
+    }
+    // Nom du canal, à côté du tracé.
+    const [lx, ly] = pts[Math.floor(pts.length / 2)];
+    ctx.font = `bold ${LABEL_FONT_SIZE}px system-ui, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = LABEL_FONT_SIZE * 0.2;
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillStyle = '#ffd24a';
+    ctx.strokeText(passage.nom, lx + w * 3, ly);
+    ctx.fillText(passage.nom, lx + w * 3, ly);
+    ctx.restore();
+  }
+}
+
 function drawBaseCanvas() {
   baseCanvas = document.createElement('canvas');
   baseCanvas.width = TEX_W;
@@ -872,6 +949,7 @@ function drawBaseCanvas() {
   // les frontières de territoire — jamais les frontières internes entre deux territoires
   // d'une même région (voir computeRegionBorderOverlay).
   if (regionBorderOverlay) bordersCtx.drawImage(regionBorderOverlay, 0, 0);
+  drawSeaLinks(bordersCtx);
 
   liveCanvas = document.createElement('canvas');
   liveCanvas.width = TEX_W;
@@ -900,9 +978,17 @@ function redrawLive() {
   for (const [id, p] of Object.entries(partie.proprietaire)) {
     paint(id, colorWithAlpha(PLAYERS[p].color, 0.62));
   }
-  // Cases mer où un joueur a un bateau : à sa couleur (la case choisie pour le premier bateau
-  // aussi, en aperçu, pendant l'étape du port).
-  for (const b of partie.bateaux) paint(b.mer, colorWithAlpha(PLAYERS[b.joueur].color, 0.5));
+  // Cases mer où un seul joueur a des bateaux : à sa couleur (la case choisie pour le premier
+  // bateau aussi, en aperçu, pendant l'étape du port). Une case disputée (bateaux de plusieurs
+  // joueurs) reste neutre : ses groupes de bateaux, chacun à sa couleur, suffisent à la lire.
+  const joueursParMer = new Map();
+  for (const b of partie.bateaux) {
+    if (!joueursParMer.has(b.mer)) joueursParMer.set(b.mer, new Set());
+    joueursParMer.get(b.mer).add(b.joueur);
+  }
+  for (const [mer, joueurs] of joueursParMer) {
+    if (joueurs.size === 1) paint(mer, colorWithAlpha(PLAYERS[[...joueurs][0]].color, 0.5));
+  }
   if (partie.phase === 'port' && portChoix.mer) paint(portChoix.mer, colorWithAlpha(PLAYERS[joueurCourant(partie)].color, 0.5));
   // Étape "atelier de départ" : seuls les territoires du joueur courant qui ont un slot
   // Industrie libre sont mis en surbrillance ; celui qu'il a choisi, plus fort.
@@ -1244,6 +1330,7 @@ function drawRail(ctx, pts, color, alpha) {
 const VOISIN_TOLERANCE_PX = 2.5;
 const voisinageCache = new Map();
 function territoiresVoisins(a, b) {
+  if (TERRITOIRE_PAR_ID[a]?.type === 'maritime' && TERRITOIRE_PAR_ID[b]?.type === 'maritime') return casesMerVoisines(a, b);
   const cle = a < b ? `${a}|${b}` : `${b}|${a}`;
   if (voisinageCache.has(cle)) return voisinageCache.get(cle);
   const ma = displayGeometryById.get(a);
@@ -1274,6 +1361,77 @@ function territoiresVoisins(a, b) {
   }
   voisinageCache.set(cle, voisins);
   return voisins;
+}
+// Deux cases MER sont voisines si elles partagent une vraie frontière maritime : on dessine
+// toutes les cases mer sur une image (1 px ≈ 20 km), chacune d'une couleur propre, et on compte
+// les pixels de l'une qui touchent un pixel de l'autre (jusqu'à 2 px d'écart). Il en faut au
+// moins SEA_CONTACT_MIN_PX (≈ 60 km de frontière commune) : deux cases qui ne se touchent que par
+// un coin, ou qui ne sont séparées que par une bande de terre étroite (isthme de Panama), ne
+// sont pas voisines. Les détroits trop étroits pour compter (Gibraltar, Bosphore) sont déclarés
+// comme passages dans data/mers.js. Calculé une seule fois, à la première demande.
+const SEA_CONTACT_MIN_PX = 3;
+let seaAdjacency = null;
+function casesMerVoisines(a, b) {
+  if (!seaAdjacency) seaAdjacency = computeSeaAdjacency();
+  return seaAdjacency.has(a < b ? `${a}|${b}` : `${b}|${a}`);
+}
+function computeSeaAdjacency() {
+  const W = TEX_W / 2, H = TEX_H / 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.scale(W / TEX_W, H / TEX_H);
+  const mers = TERRITOIRES.filter((t) => t.type === 'maritime').map((t) => t.id);
+  // Couleurs bien espacées : un pixel de bord (mélange anti-crénelage de deux cases) ne
+  // retombe jamais exactement sur la couleur d'une troisième — il est simplement ignoré.
+  const couleur = (i) => [((i + 1) * 7) % 256, ((i + 1) * 53) % 256, ((i + 1) * 101) % 256];
+  const idParCouleur = new Map();
+  mers.forEach((id, i) => {
+    const [r, g, bl] = couleur(i);
+    idParCouleur.set((r << 16) | (g << 8) | bl, i);
+    const mp = displayGeometryById.get(id);
+    if (!mp) return;
+    ctx.fillStyle = `rgb(${r},${g},${bl})`;
+    ctx.beginPath();
+    drawPixelPath(ctx, mp);
+    ctx.fill('evenodd');
+  });
+  const data = ctx.getImageData(0, 0, W, H).data;
+  const ids = new Int16Array(W * H).fill(-1);
+  for (let k = 0; k < W * H; k++) {
+    if (data[k * 4 + 3] !== 255) continue;
+    const i = idParCouleur.get((data[k * 4] << 16) | (data[k * 4 + 1] << 8) | data[k * 4 + 2]);
+    if (i !== undefined) ids[k] = i;
+  }
+  const compte = new Map();
+  const noter = (i, j) => {
+    if (i < 0 || j < 0 || i === j) return;
+    const cle = i < j ? `${i}|${j}` : `${j}|${i}`;
+    compte.set(cle, (compte.get(cle) || 0) + 1);
+  };
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = ids[y * W + x];
+      if (i < 0) continue;
+      for (let d = 1; d <= 2; d++) {
+        if (x + d < W) noter(i, ids[y * W + x + d]);
+        if (y + d < H) noter(i, ids[(y + d) * W + x]);
+      }
+      // Raccord de l'antiméridien : la carte fait le tour du globe. Les cases s'arrêtent à
+      // ±179.9° (voir scripts/build-geo.mjs), soit un liseré vide de chaque côté : on regarde
+      // jusqu'à 4 px au-delà du bord.
+      if (x >= W - 4) for (let d = 1; d <= 4; d++) if (x + d >= W) noter(i, ids[y * W + ((x + d) % W)]);
+    }
+  }
+  const voisines = new Set();
+  for (const [cle, n] of compte) {
+    if (n < SEA_CONTACT_MIN_PX) continue;
+    const [i, j] = cle.split('|').map(Number);
+    const a = mers[i], b = mers[j];
+    voisines.add(a < b ? `${a}|${b}` : `${b}|${a}`);
+  }
+  return voisines;
 }
 definirVoisinage(territoiresVoisins);
 
@@ -1512,7 +1670,7 @@ legend.open = window.matchMedia('(min-width: 700px)').matches;
 legend.innerHTML = `
   <summary>Légende</summary>
   <div class="legend-body">
-  <div><b>47 territoires</b> + <b>20 cases maritimes</b> (8 mers/océans) · 30 régions · 18 villes</div>
+  <div><b>${TERRITOIRES.filter((t) => t.type !== 'maritime').length} territoires</b> + <b>${TERRITOIRES.filter((t) => t.type === 'maritime').length} cases maritimes</b> (${REGIONS.filter((r) => regionIsMaritime.get(r)).length} mers/océans) · ${REGIONS.length} régions · ${TERRITOIRES.filter((t) => t.ville).length} villes</div>
   <div class="row"><span class="sq" style="border-radius:50%;background:#ffe066"></span> touchez un territoire pour voir sa fiche ; la mise en place de la partie se fait par étapes dans le panneau du bas</div>
   <div class="row"><span class="legend-icon">${CITY_ICON_SVG}</span> centre urbain (zoomez sur un pays pour le voir)</div>
   <div class="row"><span class="legend-icon">${FACTORY_ICON_SVG}</span> slot Industrie</div>
@@ -1520,7 +1678,9 @@ legend.innerHTML = `
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Minerais']}</span> Minerais</div>
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Énergie']}</span> Énergie</div>
   <div class="row"><span class="legend-icon" style="border-radius:50%">${RESOURCE_ICON_SVG['Terres rares']}</span> Terres rares</div>
-  <div class="row"><span class="sq" style="border-radius:3px;background:#2f8fc7"></span> case maritime</div>
+  <div class="row"><span class="sq" style="border-radius:3px;background:#2f8fc7"></span> case maritime (les cases voisines communiquent)</div>
+  <div class="row"><span class="legend-line legend-line--barriere"></span> passage fermé (banquise, archipel)</div>
+  <div class="row"><span class="legend-line legend-line--canal"></span> canal (relie deux mers)</div>
   <div>1 pt/territoire · +3/région intégrée · +4/ville</div>
   <div style="opacity:0.5;margin-top:4px">build ${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : '?'}</div>
   </div>
@@ -1710,6 +1870,7 @@ function renderSetupCard() {
     html += `<div class="setup-title">Mise en place terminée</div><div class="setup-text">${tourDe(activePlayer)}.</div>`;
   }
   setupCard.innerHTML = html;
+  setupCard.classList.toggle('termine', partie.phase === 'jeu');
 }
 
 setupCard.addEventListener('click', (ev) => {
@@ -1852,6 +2013,10 @@ function renderInfoCard() {
   } else {
     const bateaux = partie.bateaux.filter((b) => b.mer === t.id);
     lignes.push(`<div class="info-row">Bateaux : ${bateaux.length ? bateaux.map((b) => `${b.type === 'navires' ? 'guerre' : 'transport'} (${joueurTag(b.joueur)})`).join(', ') : '—'}</div>`);
+    const liens = mersConnectees(t.id);
+    lignes.push(`<div class="info-row">Communique avec : ${liens.length ? liens.map((l) => `${escapeHtml(TERRITOIRE_PAR_ID[l.mer].nom)}${l.passage ? ` <span class="dim">(${escapeHtml(l.passage)})</span>` : ''}`).join(', ') : '—'}</div>`);
+    const fermees = mersFermees(t.id);
+    if (fermees.length) lignes.push(`<div class="info-row">Fermée vers : ${fermees.map((f) => `${escapeHtml(TERRITOIRE_PAR_ID[f.mer].nom)} <span class="dim">(${escapeHtml(f.raison)})</span>`).join(', ')}</div>`);
   }
   let actions = '';
   const moi = joueurActif();
@@ -1985,15 +2150,22 @@ function refreshObjects3d() {
   objects3d = wanted.map((w) => {
     if (!modelCache.has(w.key)) modelCache.set(w.key, w.build());
     const obj = modelCache.get(w.key);
-    obj.visible = models3dVisible;
+    appliquerVisibiliteMaquette(obj, models3dVisible);
     return { territoireId: w.territoireId, lat: w.lat, lon: w.lon, obj };
   });
   world.objectsData(objects3d);
 }
+// Une maquette cachée doit aussi sortir de la détection des clics : le lancer de rayon de three.js
+// ignore la visibilité, mais pas les calques (layers). Cachée = calque 31, que ni la caméra ni le
+// rayon ne regardent.
+function appliquerVisibiliteMaquette(obj, visible) {
+  obj.visible = visible;
+  obj.traverse((o) => o.layers.set(visible ? 0 : 31));
+}
 function setModels3dVisible(visible) {
   if (visible === models3dVisible) return;
   models3dVisible = visible;
-  for (const o of objects3d) o.obj.visible = visible;
+  for (const o of objects3d) appliquerVisibiliteMaquette(o.obj, visible);
   document.documentElement.classList.toggle('zoom-3d', visible);
 }
 
@@ -2025,10 +2197,14 @@ world
   .objectThreeObject((d) => d.obj)
   // Un toucher sur une maquette 3D (même invisible de loin : elle reste sur le trajet du
   // clic) n'arrive pas au globe (onGlobeClick) : on le traite comme un toucher de son territoire.
-  .onObjectClick((d) => {
+  // De loin, les maquettes sont cachées mais restent sur le trajet du clic : on prend alors le
+  // territoire (ou la case mer) réellement sous le doigt, pas celui de la maquette.
+  .onObjectClick((d, ev, coords) => {
     if (!wasCleanTap()) return;
-    lastClickInfo = `objet→${d.territoireId}`;
-    handleTerritoryClick(d.territoireId);
+    const id = !models3dVisible && coords ? findTerritoireAt(coords.lat, coords.lng) : d.territoireId;
+    lastClickInfo = `objet→${id || 'aucun'}`;
+    if (id) handleTerritoryClick(id);
+    else renderAll();
   });
 
 world.pointOfView({ lat: 20, lng: 10, altitude: 2.6 }, 0);
@@ -2041,6 +2217,7 @@ window.__debug = {
   surbrillance: () => territoiresEnSurbrillance(),
   choix: () => ({ atelierChoix, villeChoix, railChoix, dernierToucher, lastClickInfo }),
   railPath: (a, b) => (railPath(a, b) || []).map((pt) => projection.invert([pt.x, pt.y])),
+  liensMer: () => TERRITOIRES.filter((t) => t.type === 'maritime').map((t) => `${t.id}: ${mersConnectees(t.id).map((l) => l.mer + (l.passage ? '*' : '')).join(', ')}${mersFermees(t.id).length ? ' | fermé: ' + mersFermees(t.id).map((f) => f.mer).join(', ') : ''}`).join('\n'),
 };
 updatePoiScale(world.pointOfView());
 
@@ -2112,17 +2289,21 @@ function buildMarkerElement(d) {
   group.className = 'poi-group';
   anchor.appendChild(group);
 
-  if (d.type === 'port' || d.type === 'bateau') {
-    // Port (ancre) / bateau : carré plein à la couleur du joueur, symbole en blanc.
-    const marker = document.createElement('div');
-    marker.className = `poi-marker occupied${d.type === 'bateau' ? ' poi-marker--boat' : ''}`;
-    marker.style.background = PLAYERS[d.joueur].color;
-    marker.style.borderColor = PLAYERS[d.joueur].color;
-    const cle = d.type === 'port' ? 'ports' : d.bateau;
-    marker.innerHTML = RESERVE_ITEMS.find((it) => it.key === cle)?.svg || '';
-    marker.title = d.type === 'port' ? `Port — ${TERRITOIRE_PAR_ID[d.territoireId].nom}` : `${d.bateau === 'navires' ? 'Bateau de guerre' : 'Bateau de transport'} — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
-    marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; handleTerritoryClick(d.territoireId); };
-    group.appendChild(marker);
+  if (d.type === 'port' || d.type === 'bateaux') {
+    // Port (ancre) / bateaux d'un joueur sur une case mer (côte à côte) : pastilles pleines à la
+    // couleur du joueur, symbole en blanc.
+    const icones = d.type === 'port' ? ['ports'] : d.types;
+    for (const cle of icones) {
+      const marker = document.createElement('div');
+      marker.className = `poi-marker occupied${d.type === 'bateaux' ? ' poi-marker--boat' : ''}`;
+      marker.style.background = PLAYERS[d.joueur].color;
+      marker.style.borderColor = PLAYERS[d.joueur].color;
+      marker.innerHTML = RESERVE_ITEMS.find((it) => it.key === cle)?.svg || '';
+      marker.title = d.type === 'port' ? `Port — ${TERRITOIRE_PAR_ID[d.territoireId].nom}` : `${cle === 'navires' ? 'Bateau de guerre' : 'Bateau de transport'} (${PLAYERS[d.joueur].name}) — ${TERRITOIRE_PAR_ID[d.territoireId].nom}`;
+      marker.onclick = (ev) => { ev.stopPropagation(); if (!wasCleanTap()) return; handleTerritoryClick(d.territoireId); };
+      group.appendChild(marker);
+    }
+    if (d.type === 'bateaux') group.classList.add('poi-group--boats');
   } else if (d.type === 'city') {
     const marker = document.createElement('div');
     // Ville possédée : sa maquette 3D (voir objects3d) prend le relais de l'icône en zoomant.
@@ -2208,20 +2389,53 @@ function pointDuPort(territoireId, mer) {
   portPointCache.set(cle, resultat);
   return resultat;
 }
-function pointAuLarge(portPt, mer, rang) {
+// Placement des bateaux d'une case mer, groupés par joueur (un marqueur par groupe, ses bateaux
+// côte à côte) :
+// - un seul joueur présent : son groupe vers le centre de la case (juste sous son nom) ;
+// - plusieurs joueurs : chaque groupe dans la moitié de la case tournée vers le territoire que
+//   ce joueur contrôle (son port sur cette mer, sinon son territoire le plus proche), à mi-chemin
+//   entre le centre et le bord de la case de ce côté.
+const LABEL_BOAT_OFFSET_PX = 8; // sous le nom de la case
+function positionGroupeBateaux(mer, joueur, plusieursJoueurs, rang, nbGroupes) {
   const eau = displayGeometryById.get(mer);
-  const cible = labelAnchorById.get(mer);
-  if (!eau || !cible || !portPt) return cible || portPt;
+  const centre = labelAnchorById.get(mer);
+  if (!eau || !centre) return centre || null;
   const dans = (x, y) => booleanPointInPolygon([x, y], { type: 'MultiPolygon', coordinates: eau });
-  const dx = cible.x - portPt.x, dy = cible.y - portPt.y;
-  const len = Math.hypot(dx, dy) || 1;
-  // Premier point dans la mer, à au moins ~25 px de texture (≈ 250 km) de la côte, vers le centre
-  // de la case — bien détaché du port.
-  for (let t = 25 + rang * 14; t < len; t += 3) {
-    const x = portPt.x + (dx / len) * t, y = portPt.y + (dy / len) * t;
-    if (dans(x, y)) return { x, y };
+  const sousLeNom = { x: centre.x, y: centre.y + LABEL_BOAT_OFFSET_PX };
+  if (!plusieursJoueurs) return dans(sousLeNom.x, sousLeNom.y) ? sousLeNom : centre;
+
+  // Repère du joueur : son port sur cette mer, sinon son territoire le plus proche du centre.
+  let repere = null;
+  const port = Object.entries(partie.ports).find(([, pt]) => pt.mer === mer && pt.joueur === joueur);
+  if (port) repere = pointDuPort(port[0], mer);
+  if (!repere) {
+    let meilleure = Infinity;
+    for (const [id, j] of Object.entries(partie.proprietaire)) {
+      if (j !== joueur) continue;
+      const a = labelAnchorById.get(id);
+      if (!a) continue;
+      const d = Math.hypot(a.x - centre.x, a.y - centre.y);
+      if (d < meilleure) { meilleure = d; repere = a; }
+    }
   }
-  return cible;
+  // Direction : vers ce repère, sinon (aucun territoire) répartition régulière autour du centre.
+  let dx, dy;
+  if (repere && Math.hypot(repere.x - centre.x, repere.y - centre.y) > 1) {
+    dx = repere.x - centre.x; dy = repere.y - centre.y;
+  } else {
+    const angle = (2 * Math.PI * rang) / Math.max(1, nbGroupes);
+    dx = Math.cos(angle); dy = Math.sin(angle);
+  }
+  const len = Math.hypot(dx, dy);
+  dx /= len; dy /= len;
+  // Distance du centre au bord de la case dans cette direction, puis mi-chemin.
+  let bord = 0;
+  for (let t = 1; t < 2000; t += 1) {
+    if (!dans(centre.x + dx * t, centre.y + dy * t)) break;
+    bord = t;
+  }
+  const p = { x: centre.x + dx * bord * 0.5, y: centre.y + dy * bord * 0.5 };
+  return dans(p.x, p.y) ? p : centre;
 }
 function marqueursPortsEtBateaux() {
   const out = [];
@@ -2232,15 +2446,22 @@ function marqueursPortsEtBateaux() {
     const [lon, lat] = versLonLat(p);
     out.push({ type: 'port', territoireId, joueur: port.joueur, lat, lon });
   }
-  const parMer = {};
+  // Bateaux groupés par case mer puis par joueur (ordre d'arrivée conservé).
+  const parMer = new Map();
   for (const b of partie.bateaux) {
-    const rang = (parMer[b.mer] = (parMer[b.mer] ?? -1) + 1);
-    const port = Object.entries(partie.ports).find(([, pt]) => pt.mer === b.mer && pt.joueur === b.joueur);
-    const depart = port ? pointDuPort(port[0], b.mer) : labelAnchorById.get(b.mer);
-    const p = pointAuLarge(depart, b.mer, rang);
-    if (!p) continue;
-    const [lon, lat] = versLonLat(p);
-    out.push({ type: 'bateau', territoireId: b.mer, joueur: b.joueur, bateau: b.type, lat, lon });
+    if (!parMer.has(b.mer)) parMer.set(b.mer, new Map());
+    const groupes = parMer.get(b.mer);
+    if (!groupes.has(b.joueur)) groupes.set(b.joueur, []);
+    groupes.get(b.joueur).push(b.type);
+  }
+  for (const [mer, groupes] of parMer) {
+    let rang = 0;
+    for (const [joueur, types] of groupes) {
+      const p = positionGroupeBateaux(mer, joueur, groupes.size > 1, rang++, groupes.size);
+      if (!p) continue;
+      const [lon, lat] = versLonLat(p);
+      out.push({ type: 'bateaux', territoireId: mer, joueur, types, lat, lon });
+    }
   }
   return out;
 }

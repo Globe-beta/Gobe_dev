@@ -477,7 +477,12 @@ html, body {
   /* Sur téléphone : ancré à gauche, arrêté avant la colonne de réserve (à droite), et
      au-dessus du bouton "Légende" (en bas à gauche). */
   .dock { bottom: 64px; left: 8px; transform: none; width: calc(100vw - 16px - 70px); }
-  .dock-card { max-height: 58vh; padding: 8px 10px; }
+  .dock-card { max-height: 42vh; padding: 8px 10px; }
+  /* Sur téléphone, la carte d'étape reste compacte pour laisser voir le globe : l'ordre de jeu
+     est déjà lisible sur les pastilles du haut (« 1. Joueur 2 »), l'Âge et le marché dans le
+     panneau une fois la mise en place terminée. */
+  .setup-card .setup-meta, .setup-card .ordre { display: none; }
+  .setup-card.termine .setup-meta, .setup-card.termine .ordre { display: flex; }
   .dock-card .btn { padding: 7px 10px; }
   .puissances { grid-template-columns: 1fr; }
   .puissance-card { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 10px; }
@@ -486,3 +491,11 @@ html, body {
 /* Choix en cours (ville de départ) : bouton à la couleur du joueur. */
 .btn.btn-chosen { background: var(--c); border-color: var(--c); color: #fff; }
 .btn .dim { font-weight: 400; opacity: 0.75; }
+
+/* Légende : barrière entre cases mer (pointillé blanc) et canal (pointillé doré). */
+.legend-line { width: 16px; height: 0; flex: none; border-top: 3px dashed; }
+.legend-line--barriere { border-color: #eaf6ff; }
+.legend-line--canal { border-color: #ffd24a; }
+
+/* Bateaux d'un même joueur sur une case mer : côte à côte, serrés. */
+.poi-group--boats { gap: 3px; }

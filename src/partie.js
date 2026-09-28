@@ -13,6 +13,7 @@
 
 import { CONFIG, PUISSANCES } from './config.js';
 import { TERRITOIRES, TERRITOIRE_PAR_ID } from './data/territoires.js';
+import { BARRIERES_MER, PASSAGES_MER } from './data/mers.js';
 
 export const RESSOURCES_PRODUCTIBLES = ['Énergie', 'Minerais', 'Denrées', 'Terres rares'];
 
@@ -291,4 +292,31 @@ export function placerPort(partie, territoireId, mer, typeBateau) {
   if (reserve.ports > 0) reserve.ports -= 1;
   if (reserve[typeBateau] > 0) reserve[typeBateau] -= 1;
   passerAuJoueurSuivant(partie);
+}
+
+// Communications entre cases mer (déplacement des bateaux, voir data/mers.js) : les cases mer
+// qui se touchent, sauf celles séparées par une barrière, plus celles reliées par un canal.
+const paire = (x, a, b) => (x.a === a && x.b === b) || (x.a === b && x.b === a);
+export function barriereEntre(a, b) {
+  return BARRIERES_MER.find((x) => paire(x, a, b)) || null;
+}
+export function passageEntre(a, b) {
+  return PASSAGES_MER.find((x) => paire(x, a, b)) || null;
+}
+// [{ mer, passage }] : passage = nom du canal, ou null pour une simple frontière commune.
+export function mersConnectees(mer) {
+  const out = [];
+  for (const autre of casesMer) {
+    if (autre === mer) continue;
+    const canal = passageEntre(mer, autre);
+    if (canal) out.push({ mer: autre, passage: canal.nom });
+    else if (sontVoisins(mer, autre) && !barriereEntre(mer, autre)) out.push({ mer: autre, passage: null });
+  }
+  return out;
+}
+// Cases mer voisines mais fermées : [{ mer, raison }].
+export function mersFermees(mer) {
+  return casesMer
+    .filter((autre) => autre !== mer && barriereEntre(mer, autre) && sontVoisins(mer, autre))
+    .map((autre) => ({ mer: autre, raison: barriereEntre(mer, autre).raison }));
 }
