@@ -56,8 +56,10 @@ const RESERVE_ITEMS = [
 // Un symbole par type de ressource (celles listées dans TERRITOIRES[].ressources), affiché
 // dans un petit cercle à côté de chaque usine — voir buildResourceMarkers.
 const RESOURCE_ICON_SVG = {
-  'Denrées': '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="12,2 20,9 20,21 4,21 4,9"/></svg>',
-  'Minerais': '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="12,3 20,9 12,21 4,9"/></svg>',
+  // Denrées : un épi de blé (tige, grains de part et d'autre, grain au sommet).
+  'Denrées': '<svg viewBox="0 0 24 24" fill="#1a1d24"><rect x="11.3" y="8" width="1.4" height="15" rx="0.7"/><ellipse cx="12" cy="3.4" rx="1.6" ry="2.6"/><ellipse cx="9.6" cy="7.2" rx="1.5" ry="2.6" transform="rotate(-35 9.6 7.2)"/><ellipse cx="14.4" cy="7.2" rx="1.5" ry="2.6" transform="rotate(35 14.4 7.2)"/><ellipse cx="9.6" cy="11.2" rx="1.5" ry="2.6" transform="rotate(-35 9.6 11.2)"/><ellipse cx="14.4" cy="11.2" rx="1.5" ry="2.6" transform="rotate(35 14.4 11.2)"/><ellipse cx="9.6" cy="15.2" rx="1.5" ry="2.6" transform="rotate(-35 9.6 15.2)"/><ellipse cx="14.4" cy="15.2" rx="1.5" ry="2.6" transform="rotate(35 14.4 15.2)"/></svg>',
+  // Minerais (le métal) : une épée et une hache croisées.
+  'Minerais': '<svg viewBox="0 0 24 24" fill="#1a1d24"><g transform="rotate(45 12 12)"><polygon points="10.9,15 10.9,3.2 12,0.8 13.1,3.2 13.1,15"/><rect x="8" y="15" width="8" height="1.8" rx="0.6"/><rect x="11.2" y="16.8" width="1.6" height="4.4"/><circle cx="12" cy="22.2" r="1.3"/></g><g transform="rotate(-45 12 12)"><rect x="11.2" y="2.5" width="1.6" height="20.5" rx="0.8"/><path d="M12.8 3.6 L17 2 Q19.6 6.3 17 10.6 L12.8 9 Z"/></g></svg>',
   'Énergie': '<svg viewBox="0 0 24 24" fill="#1a1d24"><polygon points="13,2 4,14 11,14 9,22 20,9 13,9"/></svg>',
   'Terres rares': '<svg viewBox="0 0 24 24" fill="#1a1d24"><path d="M6 3h4v10a2 2 0 104 0V3h4v10a6 6 0 11-12 0z"/></svg>',
 };
@@ -889,9 +891,10 @@ function redrawLive() {
     liveCtx.fill('evenodd');
   };
 
-  // Couleur du joueur en transparence : le relief (image satellite) reste lisible dessous.
+  // Couleur du joueur en semi-transparence : bien lisible sur toutes les teintes du fond
+  // satellite (forêt, steppe, désert), tout en laissant deviner le relief dessous.
   for (const [id, p] of Object.entries(partie.proprietaire)) {
-    paint(id, colorWithAlpha(PLAYERS[p].color, 0.45));
+    paint(id, colorWithAlpha(PLAYERS[p].color, 0.62));
   }
   // Étape "atelier de départ" : seuls les territoires du joueur courant qui ont un slot
   // Industrie libre sont mis en surbrillance ; celui qu'il a choisi, plus fort.
@@ -1246,7 +1249,7 @@ function renderSetupCard() {
       html += `<div class="setup-text">${tourDe(j)} — <b>${escapeHtml(t.nom)}</b> : choisissez la ressource à produire. Capacité de l'Atelier : ${CONFIG.capaciteAtelier} jeton.</div>
         <div class="ressources-choix">${ressources.map((r) => `
           <button class="ressource-btn${r.verrouillee ? ' locked' : ''}${atelierChoix.ressource === r.type ? ' chosen' : ''}" data-ressource="${r.type}" ${r.verrouillee ? 'disabled' : ''} style="--c:${PLAYERS[j].color}">
-            <span class="ressource-rond">${RESOURCE_ICON_SVG[r.type] || ''}${atelierChoix.ressource === r.type ? '<span class="jeton"></span>' : ''}</span>
+            <span class="ressource-rond">${RESOURCE_ICON_SVG[r.type] || ''}</span>
             <span>${r.type}</span>
             ${r.verrouillee ? `<span class="lock-note">🔒 Débloquée à l'Âge ${ageEnChiffresRomains(CONFIG.ageDeblocageTerresRares)}</span>` : ''}
           </button>`).join('')}</div>
@@ -1509,12 +1512,12 @@ function buildFactoryMarker(d) {
       icon.className = 'poi-resource-icon';
       icon.innerHTML = RESOURCE_ICON_SVG[resourceTypeOf(r)] || '';
       icon.title = resourceTypeOf(r);
-      // Jeton de production posé sur cette ressource (rond, à la couleur du joueur).
+      // Ressource produite (jeton de production posé dessus) : tout le rond prend la couleur
+      // du joueur, le symbole restant visible en blanc.
       if (usine && usine.jetons.includes(resourceTypeOf(r))) {
-        const jeton = document.createElement('span');
-        jeton.className = 'poi-token';
-        jeton.style.background = PLAYERS[usine.joueur].color;
-        icon.appendChild(jeton);
+        icon.classList.add('produite');
+        icon.style.background = PLAYERS[usine.joueur].color;
+        icon.style.borderColor = PLAYERS[usine.joueur].color;
       }
       row.appendChild(icon);
     }

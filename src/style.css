@@ -424,17 +424,9 @@ html, body {
   border: 3px solid #8a8f9c;
 }
 .ressource-rond svg { width: 60%; height: 60%; }
-.ressource-rond .jeton, .poi-token {
-  position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--c);
-  border: 2px solid #fff;
-  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
-}
+/* Ressource choisie / produite : tout le rond à la couleur du joueur, symbole en blanc. */
+.ressource-btn.chosen .ressource-rond { background: var(--c); border-color: var(--c); }
+.ressource-btn.chosen .ressource-rond svg, .poi-resource-icon.produite svg { fill: #fff; }
 .lock-note { font-size: 10px; color: var(--text-dim); }
 .info-card { position: relative; }
 .info-close {
@@ -473,7 +465,7 @@ html, body {
 .poi-marker--factory.occupied > svg { fill: #fff; }
 .poi-resource-icon { position: relative; }
 /* Zoomé (voir setModels3dVisible) : la maquette 3D remplace l'icône au même endroit ; seule
-   l'icône disparaît, les ressources et leur jeton restent affichés dessous. */
+   l'icône disparaît, les ressources (dont celle produite, en couleur) restent affichées dessous. */
 .zoom-3d .poi-marker.has-3d { background: transparent !important; border-color: transparent !important; box-shadow: none; }
 .zoom-3d .poi-marker.has-3d > svg { visibility: hidden; }
 

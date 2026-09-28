@@ -20,7 +20,9 @@ export const CONFIG = {
 };
 
 // Couleurs des joueurs, dans l'ordre (seules les CONFIG.nbJoueurs premières sont utilisées).
-export const COULEURS_JOUEURS = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#9b5de5', '#f15bb5'];
+// Teintes vives, choisies pour trancher sur l'image satellite : pas de vert ni de bleu-vert,
+// qui se confondaient avec la végétation une fois posés en transparence sur les territoires.
+export const COULEURS_JOUEURS = ['#e63946', '#2f6fe0', '#9b4dff', '#f4a261', '#f15bb5', '#00b8d9'];
 
 // Puissances à choisir en début de partie. `region` = nom de région de data/territoires.js
 // (le joueur y reçoit tous les territoires) ; `villesDepart` = territoires dont la ville lui
