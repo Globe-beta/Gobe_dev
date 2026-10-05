@@ -24,5 +24,5 @@ export const PASSAGES_MER = [
   // Détroit trop étroit (14 km) pour que les deux cases se touchent sur la carte : déclaré ici.
   { a: 'mer-atlantiquenord-est', b: 'mer-mediterranee-ouest', nom: 'Détroit de Gibraltar', trace: [[-6.6, 35.95], [-5.6, 35.95], [-4.6, 36.1]] },
   { a: 'mer-mediterranee-est', b: 'mer-arabie', nom: 'Canal de Suez', trace: [[32.3, 31.4], [32.4, 30.6], [32.6, 29.9], [33.2, 28.9], [33.9, 27.6]] },
-  { a: 'mer-caraibes-ouest', b: 'mer-pacifiquenord-est', nom: 'Canal de Panama', trace: [[-79.9, 9.5], [-79.8, 9.2], [-79.6, 8.9], [-79.4, 8.4], [-79.3, 7.8]] },
+  { a: 'mer-caraibes-ouest', b: 'mer-pacifique-centramerique', nom: 'Canal de Panama', trace: [[-79.9, 9.5], [-79.8, 9.2], [-79.6, 8.9], [-79.4, 8.4], [-79.3, 7.8]] },
 ];

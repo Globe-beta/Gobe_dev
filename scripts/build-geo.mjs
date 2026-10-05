@@ -393,10 +393,12 @@ const MARITIME_ZONES = [
   ['mer-noire', R(27, 40.8, 42, 47.5)],
   ['mer-mediterranee-est', R(15, 30, 36, 46)],
 
-  // Pacifique Nord-Est : côte ouest des Amériques, de 130°O jusqu'à l'isthme centraméricain.
-  // Son bord est suit la ligne de crête de l'isthme (Tehuantepec → Panama → Colombie), sur la
-  // terre : le Pacifique centraméricain n'appartient plus à la mer des Caraïbes.
-  ['mer-pacifiquenord-est', [[-130, 0], [-130, 66], [-100, 66], [-100, 20], [-94.5, 17], [-90.5, 15], [-86, 13.5], [-84, 10.5], [-80, 8.5], [-77.5, 8], [-76.5, 5], [-77.5, 0]]],
+  // Côte pacifique des Amériques à l'est de 130°O, coupée par une horizontale à 32°N (frontière
+  // États-Unis / Mexique) : Pacifique Nord-Est au nord, Pacifique centraméricain au sud. Le bord
+  // est de ce dernier suit la ligne de crête de l'isthme (Tehuantepec → Panama → Colombie), sur
+  // la terre : le Pacifique centraméricain n'appartient pas à la mer des Caraïbes.
+  ['mer-pacifiquenord-est', R(-130, 32, -100, 66)],
+  ['mer-pacifique-centramerique', [[-130, 0], [-130, 32], [-100, 32], [-100, 20], [-94.5, 17], [-90.5, 15], [-86, 13.5], [-84, 10.5], [-80, 8.5], [-77.5, 8], [-76.5, 5], [-77.5, 0]]],
 
   ['mer-caraibes-ouest', R(-98, 7, -76, 31)],
   ['mer-caraibes-est', R(-76, 7, -55, 31)],
@@ -428,21 +430,37 @@ const MARITIME_ZONES = [
   // Mer de Chine méridionale et mers d'Insulinde : bord ouest sur la ligne de crête de la
   // péninsule malaise et de Sumatra (détroit de Malacca compris), bord sud à 7°S (Java).
   ['mer-chine-sud', [[100, 23], [125, 23], [125, -7], [107, -7], [104.5, -4], [101.5, 0.5], [98.7, 3.6], [99.3, 9.1], [98.5, 16]]],
-  ['mer-pacifiquenord-ouest', R(125, 0, 179.9, 66)],
-  ['mer-pacifique-nordcentral', R(-179.9, 0, -130, 66)],
+  // Mer des Philippines : le trait vertical de la mer de Chine orientale (145°E) prolongé jusqu'à
+  // l'équateur — le Pacifique Nord-Ouest redevient un simple rectangle à l'est de 145°E.
+  ['mer-philippines', R(125, 0, 145, 23)],
+  ['mer-pacifiquenord-ouest', R(145, 0, 179.9, 66)],
+  // Pacifique Nord central, coupé en quatre à 150°O (Hawaï reste d'un seul tenant) et à 35°N.
+  ['mer-aleoutiennes', R(-179.9, 35, -150, 66)],
+  ['mer-alaska', R(-150, 35, -130, 66)],
+  ['mer-hawai', R(-179.9, 0, -150, 35)],
+  ['mer-pacifique-nordcentral', R(-150, 0, -130, 35)],
 
   // Mers d'Australie : mer de Timor, d'Arafura, de Corail, de Tasman (jusqu'à 155°E).
   ['mer-australie', R(120, -60, 155, 0)],
   ['mer-pacifiquesud-ouest', R(155, -60, 179.9, 0)],
-  ['mer-pacifiquesud-est', R(-120, -60, -70, 0)],
-  ['mer-pacifique-sudcentral', R(-179.9, -60, -120, 0)],
+  // Pacifique Sud central et Sud-Est, coupés à 30°S : eaux tropicales au nord (Polynésie, Pérou),
+  // eaux australes au sud (Chili austral, passage de Drake).
+  ['mer-pacifiquesud-est', R(-120, -30, -70, 0)],
+  ['mer-pacifique-australest', R(-120, -60, -70, -30)],
+  ['mer-pacifique-sudcentral', R(-179.9, -30, -120, 0)],
+  ['mer-pacifique-australcentral', R(-179.9, -60, -120, -30)],
 
-  // Océan Indien, coupé à 10°S : mer d'Arabie (mer Rouge, golfe Persique) et golfe du Bengale au
-  // nord ; les eaux du large au sud (Madagascar, ouest de l'Australie).
-  ['mer-arabie', R(20, -10, 70, 30)],
-  ['mer-indien-ouest', R(20, -60, 70, -10)],
+  // Océan Indien, coupé à 10°S : à l'ouest, mer d'Arabie (mer Rouge, golfe d'Aden, golfe Persique)
+  // au nord de 10°N et mer de Somalie (côte swahilie, Seychelles) au sud ; à l'est, golfe du
+  // Bengale. Au sud de 10°S, les eaux du large, coupées à 30°S comme l'Atlantique : Océan Indien
+  // occidental (Madagascar) et oriental (ouest de l'Australie), puis leurs eaux australes.
+  ['mer-arabie', R(20, 10, 70, 30)],
+  ['mer-somalie', R(20, -10, 70, 10)],
+  ['mer-indien-ouest', R(20, -30, 70, -10)],
+  ['mer-indien-australouest', R(20, -60, 70, -30)],
   ['mer-bengale', R(70, -10, 110, 30)],
-  ['mer-indien-est', R(70, -60, 120, -10)],
+  ['mer-indien-est', R(70, -30, 120, -10)],
+  ['mer-indien-australest', R(70, -60, 120, -30)],
 ];
 // Chaque case perd aussi TOUTE la terre qu'elle recouvre (Natural Earth "land", pas seulement
 // les territoires du jeu) : sans ça, une terre hors jeu (Alaska, Canaries, Féroé, petites îles
