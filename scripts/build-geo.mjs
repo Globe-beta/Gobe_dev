@@ -393,36 +393,37 @@ const MARITIME_ZONES = [
   ['mer-noire', R(27, 40.8, 42, 47.5)],
   ['mer-mediterranee-est', R(15, 30, 36, 46)],
 
-  // Côte pacifique des Amériques à l'est de 130°O, coupée par une horizontale à 32°N (frontière
-  // États-Unis / Mexique) : Pacifique Nord-Est au nord, Pacifique centraméricain au sud. Le bord
+  // Côte pacifique des Amériques à l'est de 130°O, coupée par l'horizontale de 35°N (commune à
+  // tout le Pacifique Nord et à l'Atlantique Nord) : Pacifique Nord-Est au nord, Pacifique centraméricain au sud. Le bord
   // est de ce dernier suit la ligne de crête de l'isthme (Tehuantepec → Panama → Colombie), sur
   // la terre : le Pacifique centraméricain n'appartient pas à la mer des Caraïbes.
-  ['mer-pacifiquenord-est', R(-130, 32, -100, 66)],
-  ['mer-pacifique-centramerique', [[-130, 0], [-130, 32], [-100, 32], [-100, 20], [-94.5, 17], [-90.5, 15], [-86, 13.5], [-84, 10.5], [-80, 8.5], [-77.5, 8], [-76.5, 5], [-77.5, 0]]],
+  ['mer-pacifiquenord-est', R(-130, 35, -100, 66)],
+  ['mer-pacifique-centramerique', [[-130, 0], [-130, 35], [-100, 35], [-100, 20], [-94.5, 17], [-90.5, 15], [-86, 13.5], [-84, 10.5], [-80, 8.5], [-77.5, 8], [-76.5, 5], [-77.5, 0]]],
 
-  ['mer-caraibes-ouest', R(-98, 7, -76, 31)],
-  ['mer-caraibes-est', R(-76, 7, -55, 31)],
+  // Mer des Caraïbes (et golfe du Mexique) : bornée par les horizontales communes 35°N et
+  // équateur — au sud et au nord, ses bords tombent sur la terre ou prolongent ceux de l'océan.
+  ['mer-caraibes-ouest', R(-98, 0, -76, 35)],
+  ['mer-caraibes-est', R(-76, 0, -55, 35)],
 
-  // Atlantique Nord-Est (côtier) : à l'est d'un trait vertical partant de la côte sud de
-  // l'Islande (18.9°O), qui tourne à angle droit à 31.5°N pour rejoindre la côte du Maroc
-  // (Essaouira) ; au nord, le trait Islande → Norvège (65°N).
-  ['mer-atlantiquenord-est', [[-18.9, 63.8], [-15, 65], [13.5, 65], [2, 51], [2, 50.5], [0, 45], [-2, 42.5], [-5.9, 36.3], [-5.9, 35.6], [-6, 34], [-8.5, 31.5], [-18.9, 31.5]]],
-  // Atlantique tropical : de l'équateur à 20°N, du milieu de l'océan jusqu'au fond du golfe de
-  // Guinée (10°E).
-  ['mer-atlantique-tropical', R(-40, 0, 10, 20)],
-  // Atlantique Nord central : le large, au nord de 20°N.
-  ['mer-atlantiquenord-centre', R(-40, 20, 0, 66)],
+  // Atlantique Nord-Est (côtier) : à l'est d'un trait vertical à 20°O partant de la côte sud de
+  // l'Islande, qui tourne à angle droit sur l'horizontale commune de 35°N pour rejoindre la côte
+  // du Maroc ; au nord, le trait Islande → Norvège (65°N).
+  ['mer-atlantiquenord-est', [[-20, 63.5], [-15, 65], [13.5, 65], [2, 51], [2, 50.5], [0, 45], [-2, 42.5], [-5.9, 36.3], [-5.9, 35.6], [-6.2, 35], [-20, 35]]],
+  // Atlantique : une seule ligne de partage verticale à 35°O, du cercle polaire à 60°S, et les
+  // horizontales communes 35°N, équateur et 30°S.
+  // Atlantique tropical : de l'équateur à 35°N, jusqu'au fond du golfe de Guinée.
+  ['mer-atlantique-tropical', R(-35, 0, 20, 35)],
+  ['mer-atlantiquenord-centre', R(-35, 35, 0, 66)],
   // Atlantique Nord-Ouest (côte nord-américaine, Terre-Neuve, golfe du Saint-Laurent) au nord de
   // 35°N ; mer des Sargasses au sud (Bermudes, Antilles côté océan, Guyanes).
-  ['mer-atlantiquenord-ouest', R(-80, 35, -40, 66)],
-  ['mer-sargasses', R(-80, 0, -40, 35)],
-
+  ['mer-atlantiquenord-ouest', R(-80, 35, -35, 66)],
+  ['mer-sargasses', R(-80, 0, -35, 35)],
   // Atlantique Sud, coupé à 30°S : côtes brésilienne et africaine au nord, eaux australes au sud
   // (Argentine et Malouines à l'ouest, cap de Bonne-Espérance à l'est).
-  ['mer-atlantiquesud-ouest', R(-70, -30, -25, 0)],
-  ['mer-atlantique-australouest', R(-70, -60, -25, -30)],
-  ['mer-atlantiquesud-est', R(-25, -30, 20, 0)],
-  ['mer-atlantique-australest', R(-25, -60, 20, -30)],
+  ['mer-atlantiquesud-ouest', R(-70, -30, -35, 0)],
+  ['mer-atlantique-australouest', R(-70, -60, -35, -30)],
+  ['mer-atlantiquesud-est', R(-35, -30, 20, 0)],
+  ['mer-atlantique-australest', R(-35, -60, 20, -30)],
 
   // Mers de Chine orientale et du Japon : golfe de Bohai, mer Jaune, mer de Chine orientale,
   // mer du Japon, au nord de 23°N (détroit de Taïwan), jusqu'à 145°E.
@@ -440,15 +441,18 @@ const MARITIME_ZONES = [
   ['mer-hawai', R(-179.9, 0, -150, 35)],
   ['mer-pacifique-nordcentral', R(-150, 0, -130, 35)],
 
-  // Mers d'Australie : mer de Timor, d'Arafura, de Corail, de Tasman (jusqu'à 155°E).
-  ['mer-australie', R(120, -60, 155, 0)],
-  ['mer-pacifiquesud-ouest', R(155, -60, 179.9, 0)],
+  // Pacifique Sud : mêmes verticales que le Pacifique Nord (145°E, 180°, 130°O) et horizontale
+  // commune de 30°S.
+  // Mers d'Australie : mer de Timor, d'Arafura, golfe de Carpentarie, Grande Baie australienne
+  // (jusqu'à 145°E) ; Pacifique Sud-Ouest : mer de Corail, mer de Tasman, Nouvelle-Zélande.
+  ['mer-australie', R(120, -60, 145, 0)],
+  ['mer-pacifiquesud-ouest', R(145, -60, 179.9, 0)],
   // Pacifique Sud central et Sud-Est, coupés à 30°S : eaux tropicales au nord (Polynésie, Pérou),
   // eaux australes au sud (Chili austral, passage de Drake).
-  ['mer-pacifiquesud-est', R(-120, -30, -70, 0)],
-  ['mer-pacifique-australest', R(-120, -60, -70, -30)],
-  ['mer-pacifique-sudcentral', R(-179.9, -30, -120, 0)],
-  ['mer-pacifique-australcentral', R(-179.9, -60, -120, -30)],
+  ['mer-pacifiquesud-est', R(-130, -30, -70, 0)],
+  ['mer-pacifique-australest', R(-130, -60, -70, -30)],
+  ['mer-pacifique-sudcentral', R(-179.9, -30, -130, 0)],
+  ['mer-pacifique-australcentral', R(-179.9, -60, -130, -30)],
 
   // Océan Indien, coupé à 10°S : à l'ouest, mer d'Arabie (mer Rouge, golfe d'Aden, golfe Persique)
   // au nord de 10°N et mer de Somalie (côte swahilie, Seychelles) au sud ; à l'est, golfe du
@@ -458,7 +462,7 @@ const MARITIME_ZONES = [
   ['mer-somalie', R(20, -10, 70, 10)],
   ['mer-indien-ouest', R(20, -30, 70, -10)],
   ['mer-indien-australouest', R(20, -60, 70, -30)],
-  ['mer-bengale', R(70, -10, 110, 30)],
+  ['mer-bengale', R(70, -10, 120, 30)],
   ['mer-indien-est', R(70, -30, 120, -10)],
   ['mer-indien-australest', R(70, -60, 120, -30)],
 ];
